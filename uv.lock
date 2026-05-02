@@ -1296,7 +1296,7 @@ wheels = [
 
 [[package]]
 name = "pykalshi"
-version = "0.3.7"
+version = "1.0.6"
 source = { editable = "." }
 dependencies = [
     { name = "cryptography" },
@@ -1341,7 +1341,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.0.0" },
     { name = "pykalshi", extras = ["dataframe"], marker = "extra == 'dev'" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0" },
-    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.21.0" },
+    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=1.0.0" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=4.0" },
     { name = "pytest-mock", marker = "extra == 'dev'", specifier = ">=3.0.0" },
     { name = "python-dotenv", specifier = ">=1.0.0" },

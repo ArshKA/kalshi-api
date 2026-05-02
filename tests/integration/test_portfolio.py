@@ -531,8 +531,11 @@ class TestOrderMutations:
         assert isinstance(queue_pos.queue_position_fp, str)
         assert float(queue_pos.queue_position_fp) >= 0
 
-        # Cleanup
-        order.cancel()
+        # Cleanup (order may already be filled/gone)
+        try:
+            order.cancel()
+        except ResourceNotFoundError:
+            pass
 
     def test_get_queue_positions_multiple(self, client, market_for_orders):
         """Get queue positions for all resting orders (filtered by market)."""

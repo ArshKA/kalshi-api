@@ -1,6 +1,6 @@
 [project]
 name = "pykalshi"
-version = "1.0.5"
+version = "1.0.6"
 description = "A typed Python client for the Kalshi prediction markets API with WebSocket streaming, automatic retries, and ergonomic interfaces"
 readme = "README.md"
 license = "MIT"

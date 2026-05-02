@@ -19,7 +19,7 @@ class APIKeys:
     def list(self) -> list[APIKey]:
         """List all API keys for this account."""
         data = self._client.get("/api_keys")
-        return [APIKey.model_validate(k) for k in data.get("api_keys", [])]
+        return [APIKey.model_validate(k) for k in (data.get("api_keys") or [])]
 
     def create(self, public_key: str, name: str | None = None) -> str:
         """Create an API key with a provided RSA public key.

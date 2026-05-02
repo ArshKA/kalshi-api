@@ -41,7 +41,7 @@ class Exchange:
     def get_announcements(self) -> list[Announcement]:
         """Get exchange-wide announcements."""
         data = self._client.get("/exchange/announcements")
-        return [Announcement.model_validate(a) for a in data.get("announcements", [])]
+        return [Announcement.model_validate(a) for a in (data.get("announcements") or [])]
 
     def get_user_data_timestamp(self) -> int:
         """Get timestamp of last user data validation (Unix ms)."""

@@ -319,7 +319,7 @@ class Portfolio:
         prepared = self._build_batch_orders(orders)
         response = self._client.post("/portfolio/orders/batched", {"orders": prepared})
         result = []
-        for item in response.get("orders", []):
+        for item in (response.get("orders") or []):
             order_data = item.get("order")
             if order_data is None:
                 continue
@@ -338,7 +338,7 @@ class Portfolio:
         orders = [{"order_id": oid} for oid in order_ids]
         response = self._client.delete("/portfolio/orders/batched", {"orders": orders})
         result = []
-        for item in response.get("orders", []):
+        for item in (response.get("orders") or []):
             order_data = item.get("order")
             if order_data is None:
                 continue
@@ -375,7 +375,7 @@ class Portfolio:
         response = self._client.get(endpoint)
         return DataFrameList(
             QueuePositionModel.model_validate(qp)
-            for qp in response.get("queue_positions", [])
+            for qp in (response.get("queue_positions") or [])
         )
 
     # --- Settlements ---
@@ -440,7 +440,7 @@ class Portfolio:
         response = self._client.get("/portfolio/order_groups")
         return DataFrameList(
             OrderGroupModel.model_validate(og)
-            for og in response.get("order_groups", [])
+            for og in (response.get("order_groups") or [])
         )
 
     def reset_order_group(self, order_group_id: str) -> None:
@@ -490,7 +490,7 @@ class Portfolio:
         response = self._client.get("/portfolio/subaccounts/balances")
         return DataFrameList(
             SubaccountBalanceModel.model_validate(b)
-            for b in response.get("balances", [])
+            for b in (response.get("balances") or [])
         )
 
     def get_subaccount_transfers(

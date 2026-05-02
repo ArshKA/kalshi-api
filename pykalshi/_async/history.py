@@ -92,7 +92,7 @@ class AsyncHistory:
         )
         return [
             HistoricalCandlestick.model_validate(c)
-            for c in response.get("candlesticks", [])
+            for c in (response.get("candlesticks") or [])
         ]
 
     async def get_fills(

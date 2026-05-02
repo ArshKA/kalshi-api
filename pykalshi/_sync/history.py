@@ -94,7 +94,7 @@ class History:
         )
         return [
             HistoricalCandlestick.model_validate(c)
-            for c in response.get("candlesticks", [])
+            for c in (response.get("candlesticks") or [])
         ]
 
     def get_fills(

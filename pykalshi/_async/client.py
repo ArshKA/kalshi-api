@@ -156,7 +156,7 @@ class AsyncKalshiClient(_BaseKalshiClient):
             filtered = {k: v for k, v in params.items() if v is not None}
             endpoint = f"{path}?{urlencode(filtered)}" if filtered else path
             response = await self.get(endpoint)
-            all_items.extend(response.get(response_key, []))
+            all_items.extend(response.get(response_key) or [])
             cursor = response.get("cursor", "")
             if not fetch_all or not cursor:
                 break
@@ -409,5 +409,5 @@ class AsyncKalshiClient(_BaseKalshiClient):
         response = await self.get(f"/markets/candlesticks?{query}")
         return {
             item["market_ticker"]: CandlestickResponse.model_validate(item)
-            for item in response.get("markets", [])
+            for item in (response.get("markets") or [])
         }

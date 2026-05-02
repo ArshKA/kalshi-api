@@ -39,7 +39,7 @@ class AsyncExchange:
     async def get_announcements(self) -> list[Announcement]:
         """Get exchange-wide announcements."""
         data = await self._client.get("/exchange/announcements")
-        return [Announcement.model_validate(a) for a in data.get("announcements", [])]
+        return [Announcement.model_validate(a) for a in (data.get("announcements") or [])]
 
     async def get_user_data_timestamp(self) -> int:
         """Get timestamp of last user data validation (Unix ms)."""
