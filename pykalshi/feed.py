@@ -11,9 +11,10 @@ import json
 import logging
 import threading
 import time
-from typing import Any, Callable, Union, TYPE_CHECKING
+from datetime import datetime
+from typing import Annotated, Any, Callable, Union, TYPE_CHECKING
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, BeforeValidator, ConfigDict
 
 from ._utils import normalize_ticker, normalize_tickers
 
@@ -26,6 +27,40 @@ logger = logging.getLogger(__name__)
 DEFAULT_WS_BASE = "wss://api.elections.kalshi.com/trade-api/ws/v2"
 DEMO_WS_BASE = "wss://demo-api.kalshi.co/trade-api/ws/v2"
 _WS_SIGN_PATH = "/trade-api/ws/v2"
+
+
+# --- Timestamp parsing ---
+
+
+def _parse_ts(value: Any) -> int | None:
+    """Coerce a Kalshi WebSocket ``ts`` value to int milliseconds since epoch.
+
+    Kalshi historically sent ``ts`` as an integer (ms since epoch). As of
+    April 2026 it is sent as an ISO 8601 string (e.g.
+    ``'2026-04-22T18:31:59.043421Z'``). Accept both forms and unknown values
+    return ``None`` rather than raising.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            pass
+        try:
+            return int(datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp() * 1000)
+        except (ValueError, AttributeError):
+            return None
+    return None
+
+
+TsField = Annotated[int | None, BeforeValidator(_parse_ts)]
 
 
 # --- WebSocket Message Models ---
@@ -46,7 +81,7 @@ class TickerMessage(BaseModel):
     open_interest_fp: str | None = None
     dollar_volume_dollars: str | None = None
     dollar_open_interest_dollars: str | None = None
-    ts: int | None = None
+    ts: TsField = None
 
     model_config = ConfigDict(extra="ignore")
 
@@ -95,7 +130,7 @@ class TradeMessage(BaseModel):
     yes_price_dollars: str | None = None
     no_price_dollars: str | None = None
     taker_side: str | None = None
-    ts: int | None = None
+    ts: TsField = None
 
     model_config = ConfigDict(extra="ignore")
 
@@ -116,7 +151,7 @@ class FillMessage(BaseModel):
     yes_price_dollars: str | None = None
     no_price_dollars: str | None = None
     is_taker: bool | None = None
-    ts: int | None = None
+    ts: TsField = None
 
     model_config = ConfigDict(extra="ignore")
 
@@ -135,7 +170,7 @@ class PositionMessage(BaseModel):
     total_traded_dollars: str | None = None
     resting_orders_count: int | None = None
     fees_paid_dollars: str | None = None
-    ts: int | None = None
+    ts: TsField = None
 
     model_config = ConfigDict(extra="ignore")
 
@@ -146,7 +181,7 @@ class MarketLifecycleMessage(BaseModel):
     market_ticker: str
     status: str | None = None
     result: str | None = None  # Settlement result ("yes" or "no")
-    ts: int | None = None
+    ts: TsField = None
 
     model_config = ConfigDict(extra="ignore")
 
@@ -156,7 +191,7 @@ class OrderGroupUpdateMessage(BaseModel):
 
     order_group_id: str
     status: str | None = None  # "active", "triggered", "canceled"
-    ts: int | None = None
+    ts: TsField = None
 
     model_config = ConfigDict(extra="ignore")
 
@@ -552,10 +587,10 @@ class Feed:
 
         payload = data.get("msg", data)
         if isinstance(payload, dict):
-            ts = payload.get("ts")
-            if ts is not None:
+            parsed_ts = _parse_ts(payload.get("ts"))
+            if parsed_ts is not None:
                 with self._metrics_lock:
-                    self._last_server_ts = int(ts)
+                    self._last_server_ts = parsed_ts
 
         handlers = self._handlers.get(channel)
         if not handlers:

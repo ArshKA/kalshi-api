@@ -14,7 +14,37 @@ from pykalshi.feed import (
     PositionMessage,
     DEFAULT_WS_BASE,
     DEMO_WS_BASE,
+    _parse_ts,
 )
+
+
+class TestParseTs:
+    """Tests for ts coercion helper.
+
+    Kalshi switched ts from int ms epoch to ISO 8601 string in April 2026
+    (issue #18). The helper must accept both and reject garbage gracefully.
+    """
+
+    def test_int_passes_through(self):
+        assert _parse_ts(1776882719000) == 1776882719000
+
+    def test_none_returns_none(self):
+        assert _parse_ts(None) is None
+
+    def test_iso_string_with_microseconds(self):
+        assert _parse_ts("2026-04-22T18:31:59.043421Z") == 1776882719043
+
+    def test_iso_string_without_microseconds(self):
+        assert _parse_ts("2026-04-22T18:31:59Z") == 1776882719000
+
+    def test_numeric_string_parsed_as_int(self):
+        assert _parse_ts("1776882719000") == 1776882719000
+
+    def test_unparseable_string_returns_none(self):
+        assert _parse_ts("not-a-timestamp") is None
+
+    def test_unexpected_type_returns_none(self):
+        assert _parse_ts({"unexpected": "dict"}) is None
 
 
 class TestFeedCreation:
@@ -549,6 +579,19 @@ class TestMessageModels:
         assert msg.realized_pnl_dollars == "2.50"
         assert msg.ts == 1704067200
 
+    def test_ticker_model_accepts_iso_ts(self):
+        """ts field accepts ISO 8601 strings and normalizes to int ms epoch.
+
+        Kalshi changed ts from int ms to ISO 8601 in April 2026 (issue #18).
+        Validation must succeed so handlers receive a typed model, not a dict.
+        """
+        msg = TickerMessage(market_ticker="TEST", ts="2026-04-22T18:31:59Z")
+        assert msg.ts == 1776882719000
+
+    def test_trade_model_accepts_iso_ts(self):
+        msg = TradeMessage(market_ticker="TEST", ts="2026-04-22T18:31:59Z")
+        assert msg.ts == 1776882719000
+
     def test_models_ignore_extra_fields(self):
         """Models ignore unknown fields (forward compatibility)."""
         msg = TickerMessage(
@@ -632,6 +675,52 @@ class TestLatencyMetrics:
         feed._dispatch(raw)
 
         assert feed._last_server_ts == server_ts
+
+    def test_server_timestamp_iso_string(self, client):
+        """Server timestamp accepts ISO 8601 strings (Kalshi April 2026 change).
+
+        Regression test for issue #18: ``int(ts)`` raised ValueError when Kalshi
+        switched ts to ISO 8601, taking down every WS connection.
+        """
+        feed = Feed(client)
+        feed.on("ticker", lambda x: None)
+
+        raw = json.dumps({
+            "type": "ticker",
+            "msg": {"market_ticker": "TEST", "ts": "2026-04-22T18:31:59.043421Z"},
+        })
+        feed._dispatch(raw)
+
+        # 2026-04-22T18:31:59.043421Z → ms since epoch
+        assert feed._last_server_ts == 1776882719043
+        assert feed.reconnect_count == 0
+
+    def test_server_timestamp_iso_string_no_microseconds(self, client):
+        """ISO 8601 without microseconds is accepted."""
+        feed = Feed(client)
+        feed.on("ticker", lambda x: None)
+
+        raw = json.dumps({
+            "type": "ticker",
+            "msg": {"market_ticker": "TEST", "ts": "2026-04-22T18:31:59Z"},
+        })
+        feed._dispatch(raw)
+
+        assert feed._last_server_ts == 1776882719000
+
+    def test_server_timestamp_unparseable_is_ignored(self, client):
+        """Unrecognized ts values do not crash dispatch."""
+        feed = Feed(client)
+        feed.on("ticker", lambda x: None)
+
+        raw = json.dumps({
+            "type": "ticker",
+            "msg": {"market_ticker": "TEST", "ts": "not-a-timestamp"},
+        })
+        feed._dispatch(raw)  # must not raise
+
+        assert feed._last_server_ts is None
+        assert feed.messages_received == 1
 
     def test_latency_calculated_from_timestamps(self, client):
         """Latency is calculated when server timestamp is available."""

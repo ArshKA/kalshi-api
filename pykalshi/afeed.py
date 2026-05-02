@@ -12,6 +12,7 @@ from typing import Any, AsyncIterator, Callable, TYPE_CHECKING
 from ._utils import normalize_tickers
 from .feed import (
     _parse_message,
+    _parse_ts,
     _WS_SIGN_PATH,
     DEFAULT_WS_BASE,
     DEMO_WS_BASE,
@@ -205,9 +206,9 @@ class AsyncFeed:
                     # Extract server timestamp
                     payload = data.get("msg", data)
                     if isinstance(payload, dict):
-                        ts = payload.get("ts")
-                        if ts is not None:
-                            self._last_server_ts = int(ts)
+                        parsed_ts = _parse_ts(payload.get("ts"))
+                        if parsed_ts is not None:
+                            self._last_server_ts = parsed_ts
 
                     # Call registered handlers
                     for handler in self._handlers.get(channel, []):
