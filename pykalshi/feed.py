@@ -33,29 +33,18 @@ _WS_SIGN_PATH = "/trade-api/ws/v2"
 
 
 def _parse_ts(value: Any) -> int | None:
-    """Coerce a Kalshi WebSocket ``ts`` value to int milliseconds since epoch.
+    """Coerce a Kalshi WebSocket ``ts`` to int milliseconds since epoch.
 
-    Kalshi historically sent ``ts`` as an integer (ms since epoch). As of
-    April 2026 it is sent as an ISO 8601 string (e.g.
-    ``'2026-04-22T18:31:59.043421Z'``). Accept both forms and unknown values
-    return ``None`` rather than raising.
+    Pre-April-2026 Kalshi sent int ms; since then it sends ISO 8601 strings
+    (e.g. ``'2026-04-22T18:31:59.043421Z'``). Accept both; unrecognized
+    values return None rather than raising.
     """
-    if value is None:
-        return None
-    if isinstance(value, bool):
-        return None
     if isinstance(value, int):
         return value
-    if isinstance(value, float):
-        return int(value)
     if isinstance(value, str):
         try:
-            return int(value)
-        except ValueError:
-            pass
-        try:
             return int(datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp() * 1000)
-        except (ValueError, AttributeError):
+        except ValueError:
             return None
     return None
 
