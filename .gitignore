@@ -37,3 +37,6 @@ market.json
 
 # Claude Code
 CLAUDE.md
+
+# Maven
+target/
