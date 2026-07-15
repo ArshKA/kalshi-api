@@ -93,6 +93,8 @@ public final class Feed implements WebSocket.Listener {
                 default -> null;
             };
             if (message == null) return;
+            // Snapshots and deltas intentionally share the same handler channel so callers can
+            // initialize and incrementally maintain a local orderbook through one subscription.
             String dispatchChannel = "orderbook_snapshot".equals(type) ? "orderbook_delta" : type;
             handlers.getOrDefault(dispatchChannel, List.of()).forEach(handler -> handler.accept(message));
         } catch (Exception ignored) {

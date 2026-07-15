@@ -151,10 +151,11 @@ public class KalshiClient {
     }
 
     private double computeBackoff(int attempt, String retryAfter) {
+        double fallback = Math.min(Math.pow(2, attempt) * 0.5, 30.0);
         try {
-            return retryAfter != null ? Double.parseDouble(retryAfter) : Math.min(Math.pow(2, attempt) * 0.5, 30.0);
+            return retryAfter != null ? Double.parseDouble(retryAfter) : fallback;
         } catch (NumberFormatException e) {
-            return Math.min(Math.pow(2, attempt) * 0.5, 30.0);
+            return fallback;
         }
     }
 

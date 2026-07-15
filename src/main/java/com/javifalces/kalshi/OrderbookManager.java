@@ -1,6 +1,7 @@
 package com.javifalces.kalshi;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.Map;
@@ -46,7 +47,10 @@ public final class OrderbookManager {
 
     public String mid() {
         if (bestBid() == null || bestAsk() == null) return null;
-        return new BigDecimal(bestAsk()).add(new BigDecimal(bestBid())).divide(new BigDecimal("2")).stripTrailingZeros().toPlainString();
+        return new BigDecimal(bestAsk()).add(new BigDecimal(bestBid()))
+                .divide(new BigDecimal("2"), 10, RoundingMode.HALF_UP)
+                .stripTrailingZeros()
+                .toPlainString();
     }
 
     public String ticker() { return ticker; }

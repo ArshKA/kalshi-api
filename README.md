@@ -75,4 +75,4 @@ The Java client expects a PKCS#8 PEM RSA private key.
 ## Notes
 
 - The Java port preserves the core repo behavior around signing, request handling, service APIs, feed parsing, and orderbook state.
-- The Python source remains in the repository as a reference while the migration artifacts are kept in sync.
+- The Python source remains in the repository as a frozen reference for migration comparison; ongoing implementation work is centered on the Java Maven codebase.
