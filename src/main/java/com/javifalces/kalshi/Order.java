@@ -35,6 +35,14 @@ public final class Order {
                 throw new IllegalStateException("Timed out waiting for order to reach a terminal state");
             }
             refresh();
+            if (status() == OrderStatus.RESTING || status() == OrderStatus.PENDING) {
+                try {
+                    Thread.sleep(100);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException("Interrupted while waiting for order to reach a terminal state", e);
+                }
+            }
         }
         return this;
     }
