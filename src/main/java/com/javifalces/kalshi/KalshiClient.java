@@ -79,7 +79,7 @@ public class KalshiClient {
         URI uri = URI.create(apiBase + endpoint + queryString);
         String requestBody = body == null ? null : JsonSupport.write(body);
         String fullPath = apiPath + endpoint;
-        String lastResponseBody = null;
+        KalshiApiException failure = null;
 
         for (int attempt = 0; attempt <= maxRetries; attempt++) {
             rateLimiter.acquire();
@@ -100,7 +100,6 @@ public class KalshiClient {
                 throw new IllegalStateException("HTTP request interrupted", e);
             }
             updateRateLimiter(response);
-            lastResponseBody = response.body();
             if (response.statusCode() < 400) {
                 try {
                     return response.body() == null || response.body().isBlank()
@@ -111,11 +110,12 @@ public class KalshiClient {
                 }
             }
             if (!isRetryable(response.statusCode()) || attempt == maxRetries) {
-                throw mapException(response, method, endpoint, requestBody);
+                failure = mapException(response, method, endpoint, requestBody);
+                break;
             }
             sleep(computeBackoff(attempt, response.firstHeader("Retry-After")));
         }
-        throw new IllegalStateException("Unreachable after request failure: " + lastResponseBody);
+        throw failure == null ? new IllegalStateException("Request failed without a mapped exception") : failure;
     }
 
     public Market getMarket(String ticker) { return markets().getMarket(ticker); }

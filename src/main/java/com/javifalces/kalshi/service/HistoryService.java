@@ -37,7 +37,7 @@ public final class HistoryService extends AbstractService {
                 markets.add(new Market(client, JsonSupport.MAPPER.convertValue(node, MarketData.class)));
             }
             cursor = root.path("cursor").asText("");
-        } while (fetchAll && !cursor.isBlank());
+        } while (fetchAll && cursor != null && !cursor.isBlank());
         return markets;
     }
 

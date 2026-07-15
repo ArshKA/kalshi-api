@@ -83,7 +83,7 @@ public final class Feed implements WebSocket.Listener {
             JsonNode msg = root.path("msg");
             FeedMessage message = switch (type) {
                 case "ticker" -> new TickerMessage(msg.path("market_ticker").asText(), msg.path("yes_bid_dollars").asText(null), msg.path("yes_ask_dollars").asText(null), msg.path("volume_fp").asText(null));
-                case "orderbook_snapshot" -> new OrderbookSnapshotMessage(msg.path("market_ticker").asText(), JsonSupport.MAPPER.convertValue(msg.path("yes_dollars"), JsonSupport.MAPPER.getTypeFactory().constructCollectionType(List.class, JsonSupport.MAPPER.getTypeFactory().constructCollectionType(List.class, String.class))), JsonSupport.MAPPER.convertValue(msg.path("no_dollars"), JsonSupport.MAPPER.getTypeFactory().constructCollectionType(List.class, JsonSupport.MAPPER.getTypeFactory().constructCollectionType(List.class, String.class))));
+                case "orderbook_snapshot" -> new OrderbookSnapshotMessage(msg.path("market_ticker").asText(), levelMatrix(msg.path("yes_dollars")), levelMatrix(msg.path("no_dollars")));
                 case "orderbook_delta" -> new OrderbookDeltaMessage(msg.path("market_ticker").asText(), msg.path("price_dollars").asText(), msg.path("delta_fp").asText(), msg.path("side").asText());
                 case "trade" -> new TradeMessage(msg.path("market_ticker").asText(), msg.path("trade_id").asText(), msg.path("count_fp").asText(), msg.path("yes_price_dollars").asText(null), msg.path("taker_side").asText(null), parseTs(msg.path("ts")));
                 case "fill" -> new FillMessage(msg.path("market_ticker").asText(), msg.path("order_id").asText(), msg.path("trade_id").asText(), msg.path("count_fp").asText(), msg.path("side").asText());
@@ -97,6 +97,16 @@ public final class Feed implements WebSocket.Listener {
             handlers.getOrDefault(dispatchChannel, List.of()).forEach(handler -> handler.accept(message));
         } catch (Exception ignored) {
         }
+    }
+
+    private List<List<String>> levelMatrix(JsonNode node) {
+        return JsonSupport.MAPPER.convertValue(
+                node,
+                JsonSupport.MAPPER.getTypeFactory().constructCollectionType(
+                        List.class,
+                        JsonSupport.MAPPER.getTypeFactory().constructCollectionType(List.class, String.class)
+                )
+        );
     }
 
     public static Long parseTs(JsonNode ts) {
