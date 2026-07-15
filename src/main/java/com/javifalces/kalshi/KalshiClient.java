@@ -34,6 +34,9 @@ import java.util.Map;
 public class KalshiClient {
     public static final String DEFAULT_API_BASE = "https://api.elections.kalshi.com/trade-api/v2";
     public static final String DEMO_API_BASE = "https://demo-api.kalshi.co/trade-api/v2";
+    private static final java.util.Set<String> ORDER_REJECTION_CODES = java.util.Set.of(
+            "order_rejected", "market_closed", "market_settled", "invalid_price", "self_trade", "post_only_rejected"
+    );
 
     private final String apiKeyId;
     private final String apiBase;
@@ -193,7 +196,7 @@ public class KalshiClient {
         if ("insufficient_funds".equals(code) || "insufficient_balance".equals(code)) {
             return new InsufficientFundsException(status, message, code, method, endpoint, requestBody, response.body());
         }
-        if (code != null && List.of("order_rejected", "market_closed", "market_settled", "invalid_price", "self_trade", "post_only_rejected").contains(code)) {
+        if (code != null && ORDER_REJECTION_CODES.contains(code)) {
             return new OrderRejectedException(status, message, code, method, endpoint, requestBody, response.body());
         }
         return new KalshiApiException(status, message, code, method, endpoint, requestBody, response.body());

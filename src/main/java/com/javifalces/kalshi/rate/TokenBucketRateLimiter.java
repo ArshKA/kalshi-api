@@ -8,7 +8,7 @@ public class TokenBucketRateLimiter implements RateLimiter {
     private double lastRefillAt;
 
     public TokenBucketRateLimiter(double requestsPerSecond, double burst) {
-        this(requestsPerSecond, burst, new SystemSleeper(), System::nanoTime);
+        this(requestsPerSecond, burst, new SystemSleeper(), () -> System.nanoTime() / 1_000_000_000.0);
     }
 
     public TokenBucketRateLimiter(double requestsPerSecond, double burst, Sleeper sleeper, TimeSource timeSource) {
