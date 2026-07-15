@@ -1,0 +1,10 @@
+com/javifalces/kalshi/KalshiClientTest.class
+com/javifalces/kalshi/OrderbookManagerTest.class
+com/javifalces/kalshi/MarketsAndPortfolioTest.class
+com/javifalces/kalshi/FeedTest.class
+com/javifalces/kalshi/TestSupport$FakeTransport.class
+com/javifalces/kalshi/AsyncKalshiClientTest.class
+com/javifalces/kalshi/TestSupport.class
+com/javifalces/kalshi/TokenBucketRateLimiterTest$1FakeClock.class
+com/javifalces/kalshi/TokenBucketRateLimiterTest.class
+com/javifalces/kalshi/ExchangeAndApiKeysTest.class
