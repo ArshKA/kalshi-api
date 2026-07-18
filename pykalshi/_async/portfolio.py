@@ -90,7 +90,7 @@ class AsyncPortfolio:
             price_level_structure=pls,
             fractional_trading_enabled=fte,
         )
-        response = await self._client.post("/portfolio/orders", order_data)
+        response = await self._client.post("/portfolio/events/orders", order_data)
         model = OrderModel.model_validate(response["order"])
         return AsyncOrder(self._client, model)
 
@@ -104,7 +104,7 @@ class AsyncPortfolio:
         Returns:
             The canceled Order with updated status.
         """
-        endpoint = f"/portfolio/orders/{order_id}"
+        endpoint = f"/portfolio/events/orders/{order_id}"
         if subaccount is not None:
             endpoint += f"?subaccount={subaccount}"
         response = await self._client.delete(endpoint)
@@ -167,7 +167,7 @@ class AsyncPortfolio:
         if subaccount is not None:
             body["subaccount"] = subaccount
 
-        response = await self._client.post(f"/portfolio/orders/{order_id}/amend", body)
+        response = await self._client.post(f"/portfolio/events/orders/{order_id}/amend", body)
         model = OrderModel.model_validate(response["order"])
         return AsyncOrder(self._client, model)
 
@@ -179,7 +179,7 @@ class AsyncPortfolio:
             reduce_by_fp: Number of contracts to reduce by (fixed-point string).
         """
         response = await self._client.post(
-            f"/portfolio/orders/{order_id}/decrease", {"reduce_by_fp": reduce_by_fp}
+            f"/portfolio/events/orders/{order_id}/decrease", {"reduce_by_fp": reduce_by_fp}
         )
         model = OrderModel.model_validate(response["order"])
         return AsyncOrder(self._client, model)
@@ -220,12 +220,12 @@ class AsyncPortfolio:
             "cursor": cursor,
             **extra_params,
         }
-        data = await self._client.paginated_get("/portfolio/orders", "orders", params, fetch_all)
+        data = await self._client.paginated_get("/portfolio/events/orders", "orders", params, fetch_all)
         return DataFrameList(AsyncOrder(self._client, OrderModel.model_validate(d)) for d in data)
 
     async def get_order(self, order_id: str) -> AsyncOrder:
         """Get a single order by ID."""
-        response = await self._client.get(f"/portfolio/orders/{order_id}")
+        response = await self._client.get(f"/portfolio/events/orders/{order_id}")
         model = OrderModel.model_validate(response["order"])
         return AsyncOrder(self._client, model)
 
@@ -315,7 +315,7 @@ class AsyncPortfolio:
             results = await portfolio.batch_place_orders(orders)
         """
         prepared = self._build_batch_orders(orders)
-        response = await self._client.post("/portfolio/orders/batched", {"orders": prepared})
+        response = await self._client.post("/portfolio/events/orders/batched", {"orders": prepared})
         result = []
         for item in (response.get("orders") or []):
             order_data = item.get("order")
@@ -334,7 +334,7 @@ class AsyncPortfolio:
             The canceled Orders with updated status.
         """
         orders = [{"order_id": oid} for oid in order_ids]
-        response = await self._client.delete("/portfolio/orders/batched", {"orders": orders})
+        response = await self._client.delete("/portfolio/events/orders/batched", {"orders": orders})
         result = []
         for item in (response.get("orders") or []):
             order_data = item.get("order")
@@ -347,7 +347,7 @@ class AsyncPortfolio:
 
     async def get_queue_position(self, order_id: str) -> QueuePositionModel:
         """Get queue position for a single resting order."""
-        response = await self._client.get(f"/portfolio/orders/{order_id}/queue_position")
+        response = await self._client.get(f"/portfolio/events/orders/{order_id}/queue_position")
         return QueuePositionModel(
             order_id=order_id,
             queue_position_fp=response.get("queue_position_fp", "0.00"),
@@ -366,7 +366,7 @@ class AsyncPortfolio:
         if event_ticker:
             params["event_ticker"] = normalize_ticker(event_ticker)
 
-        endpoint = "/portfolio/orders/queue_positions"
+        endpoint = "/portfolio/events/orders/queue_positions"
         if params:
             endpoint = f"{endpoint}?{urlencode(params)}"
 

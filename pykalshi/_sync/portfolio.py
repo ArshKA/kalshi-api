@@ -42,12 +42,12 @@ class Portfolio:
         yes_price_dollars: str | None = None,
         no_price_dollars: str | None = None,
         client_order_id: str | None = None,
-        time_in_force: TimeInForce | None = None,
+        time_in_force: TimeInForce | None = TimeInForce.GTC,
         post_only: bool = False,
         reduce_only: bool = False,
         expiration_ts: int | None = None,
         buy_max_cost_dollars: str | None = None,
-        self_trade_prevention: SelfTradePrevention | None = None,
+        self_trade_prevention: SelfTradePrevention | None = SelfTradePrevention.CANCEL_RESTING,
         order_group_id: str | None = None,
         subaccount: int | None = None,
         cancel_order_on_pause: bool | None = None,
@@ -92,9 +92,13 @@ class Portfolio:
             price_level_structure=pls,
             fractional_trading_enabled=fte,
         )
-        response = self._client.post("/portfolio/orders", order_data)
-        model = OrderModel.model_validate(response["order"])
-        return Order(self._client, model)
+        # print("[DEBUG] order_data:", order_data)
+
+        response = self._client.post("/portfolio/events/orders", order_data)
+        # # print(response)
+        # print(response["order_id"])
+        # model = OrderModel.model_validate(response["order_id"])
+        return response["order_id"]
 
     def cancel_order(self, order_id: str, *, subaccount: int | None = None) -> Order:
         """Cancel a resting order.
@@ -106,7 +110,7 @@ class Portfolio:
         Returns:
             The canceled Order with updated status.
         """
-        endpoint = f"/portfolio/orders/{order_id}"
+        endpoint = f"/portfolio/events/orders/{order_id}"
         if subaccount is not None:
             endpoint += f"?subaccount={subaccount}"
         response = self._client.delete(endpoint)
@@ -169,7 +173,7 @@ class Portfolio:
         if subaccount is not None:
             body["subaccount"] = subaccount
 
-        response = self._client.post(f"/portfolio/orders/{order_id}/amend", body)
+        response = self._client.post(f"/portfolio/events/orders/{order_id}/amend", body)
         model = OrderModel.model_validate(response["order"])
         return Order(self._client, model)
 
@@ -181,7 +185,7 @@ class Portfolio:
             reduce_by_fp: Number of contracts to reduce by (fixed-point string).
         """
         response = self._client.post(
-            f"/portfolio/orders/{order_id}/decrease", {"reduce_by_fp": reduce_by_fp}
+            f"/portfolio/events/orders/{order_id}/decrease", {"reduce_by_fp": reduce_by_fp}
         )
         model = OrderModel.model_validate(response["order"])
         return Order(self._client, model)
@@ -222,12 +226,12 @@ class Portfolio:
             "cursor": cursor,
             **extra_params,
         }
-        data = self._client.paginated_get("/portfolio/orders", "orders", params, fetch_all)
+        data = self._client.paginated_get("/portfolio/events/orders", "orders", params, fetch_all)
         return DataFrameList(Order(self._client, OrderModel.model_validate(d)) for d in data)
 
     def get_order(self, order_id: str) -> Order:
         """Get a single order by ID."""
-        response = self._client.get(f"/portfolio/orders/{order_id}")
+        response = self._client.get(f"/portfolio/events/orders/{order_id}")
         model = OrderModel.model_validate(response["order"])
         return Order(self._client, model)
 
@@ -317,7 +321,7 @@ class Portfolio:
             results = portfolio.batch_place_orders(orders)
         """
         prepared = self._build_batch_orders(orders)
-        response = self._client.post("/portfolio/orders/batched", {"orders": prepared})
+        response = self._client.post("/portfolio/events/orders/batched", {"orders": prepared})
         result = []
         for item in (response.get("orders") or []):
             order_data = item.get("order")
@@ -336,7 +340,7 @@ class Portfolio:
             The canceled Orders with updated status.
         """
         orders = [{"order_id": oid} for oid in order_ids]
-        response = self._client.delete("/portfolio/orders/batched", {"orders": orders})
+        response = self._client.delete("/portfolio/events/orders/batched", {"orders": orders})
         result = []
         for item in (response.get("orders") or []):
             order_data = item.get("order")
@@ -349,7 +353,7 @@ class Portfolio:
 
     def get_queue_position(self, order_id: str) -> QueuePositionModel:
         """Get queue position for a single resting order."""
-        response = self._client.get(f"/portfolio/orders/{order_id}/queue_position")
+        response = self._client.get(f"/portfolio/events/orders/{order_id}/queue_position")
         return QueuePositionModel(
             order_id=order_id,
             queue_position_fp=response.get("queue_position_fp", "0.00"),
@@ -368,7 +372,7 @@ class Portfolio:
         if event_ticker:
             params["event_ticker"] = normalize_ticker(event_ticker)
 
-        endpoint = "/portfolio/orders/queue_positions"
+        endpoint = "/portfolio/events/orders/queue_positions"
         if params:
             endpoint = f"{endpoint}?{urlencode(params)}"
 
@@ -577,7 +581,7 @@ class Portfolio:
         price_level_structure=None,
         fractional_trading_enabled=None,
     ) -> dict:
-        """Build and validate order data dict. No I/O.
+        """Build and validate order data dict for the V2 /portfolio/events/orders endpoint.
 
         If price_level_structure is provided, validates tick size alignment.
         If fractional_trading_enabled is provided (False), validates count_fp is whole.
@@ -589,24 +593,32 @@ class Portfolio:
             raise ValueError("Limit orders require yes_price_dollars or no_price_dollars")
 
         if no_price_dollars is not None:
-            yes_price_dollars = str(Decimal("1") - Decimal(no_price_dollars))
+            yes_price = Decimal("1") - Decimal(no_price_dollars)
+        else:
+            yes_price = Decimal(yes_price_dollars)
 
         # Validate tick size if market structure is known
-        if price_level_structure and yes_price_dollars is not None:
-            Portfolio._validate_tick_size(Decimal(yes_price_dollars), price_level_structure)
+        if price_level_structure is not None:
+            Portfolio._validate_tick_size(yes_price, price_level_structure)
 
         # Validate fractional trading
         if fractional_trading_enabled is not None:
             Portfolio._validate_fractional(count_fp, fractional_trading_enabled)
 
+        if side == Side.YES:
+            v2_side = "bid" if action == Action.BUY else "ask"
+        elif side == Side.NO:
+            v2_side = "ask" if action == Action.BUY else "bid"
+        else:
+            raise ValueError(f"Unsupported side: {side!r}")
+
         ticker_str = ticker.upper() if isinstance(ticker, str) else ticker.ticker
 
         order_data: dict = {
             "ticker": ticker_str,
-            "action": action.value,
-            "side": side.value,
-            "count_fp": count_fp,
-            "yes_price_dollars": yes_price_dollars,
+            "side": v2_side,
+            "count": count_fp,
+            "price": f"{yes_price:.4f}",
         }
         if client_order_id is not None:
             order_data["client_order_id"] = client_order_id
@@ -617,9 +629,7 @@ class Portfolio:
         if reduce_only:
             order_data["reduce_only"] = True
         if expiration_ts is not None:
-            order_data["expiration_ts"] = expiration_ts
-        if buy_max_cost_dollars is not None:
-            order_data["buy_max_cost_dollars"] = buy_max_cost_dollars
+            order_data["expiration_time"] = expiration_ts
         if self_trade_prevention is not None:
             order_data["self_trade_prevention_type"] = self_trade_prevention.value
         if order_group_id is not None:
@@ -629,7 +639,6 @@ class Portfolio:
         if cancel_order_on_pause is not None:
             order_data["cancel_order_on_pause"] = cancel_order_on_pause
         return order_data
-
     @staticmethod
     def _build_batch_orders(orders: list[dict]) -> list[dict]:
         """Validate and prepare batch orders. No I/O."""

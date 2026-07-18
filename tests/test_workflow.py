@@ -58,7 +58,7 @@ def test_place_order_workflow(client, mock_response, mocker):
     # Verify correct payload sent
     call_args = client._session.request.call_args
     assert call_args.args[0] == "POST"
-    assert "/portfolio/orders" in call_args.args[1]
+    assert "/portfolio/events/orders" in call_args.args[1]
     body = json.loads(call_args.kwargs["content"])
     assert body["ticker"] == "KXTEST"
     assert body["action"] == "buy"

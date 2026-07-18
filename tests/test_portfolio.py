@@ -177,7 +177,7 @@ def test_get_order_by_id(client, mock_response):
     # Verify correct endpoint called
     client._session.request.assert_called_with(
         "GET",
-        "https://demo-api.kalshi.co/trade-api/v2/portfolio/orders/order-abc-123",
+        "https://demo-api.kalshi.co/trade-api/v2/portfolio/events/orders/order-abc-123",
         headers=ANY,
         timeout=ANY,
     )
@@ -220,7 +220,7 @@ def test_cancel_order(client, mock_response):
     # Verify DELETE request
     client._session.request.assert_called_with(
         "DELETE",
-        "https://demo-api.kalshi.co/trade-api/v2/portfolio/orders/order-abc-123",
+        "https://demo-api.kalshi.co/trade-api/v2/portfolio/events/orders/order-abc-123",
         headers=ANY,
         timeout=ANY,
     )
@@ -290,7 +290,7 @@ def test_order_amend(client, mock_response):
     # Verify POST to amend endpoint
     call_args = client._session.request.call_args
     assert call_args.args[0] == "POST"
-    assert "/portfolio/orders/order-abc-123/amend" in call_args.args[1]
+    assert "/portfolio/events/orders/order-abc-123/amend" in call_args.args[1]
 
 
 def test_order_decrease(client, mock_response):
@@ -325,7 +325,7 @@ def test_order_decrease(client, mock_response):
     # Verify POST to decrease endpoint
     call_args = client._session.request.call_args
     assert call_args.args[0] == "POST"
-    assert "/portfolio/orders/order-abc-123/decrease" in call_args.args[1]
+    assert "/portfolio/events/orders/order-abc-123/decrease" in call_args.args[1]
 
 
 def test_order_refresh(client, mock_response):
@@ -361,7 +361,7 @@ def test_order_refresh(client, mock_response):
     # Verify GET to order endpoint
     client._session.request.assert_called_with(
         "GET",
-        "https://demo-api.kalshi.co/trade-api/v2/portfolio/orders/order-abc-123",
+        "https://demo-api.kalshi.co/trade-api/v2/portfolio/events/orders/order-abc-123",
         headers=ANY,
         timeout=ANY,
     )
