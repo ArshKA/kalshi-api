@@ -38,7 +38,7 @@ class TestAPIKeysList:
         assert keys[1].id == "key-002"
         client._session.request.assert_called_with(
             "GET",
-            "https://demo-api.kalshi.co/trade-api/v2/api_keys",
+            "https://external-api.demo.kalshi.co/trade-api/v2/api_keys",
             headers=ANY,
             timeout=ANY,
         )
@@ -136,7 +136,7 @@ class TestAPIKeyDelete:
 
         client._session.request.assert_called_with(
             "DELETE",
-            "https://demo-api.kalshi.co/trade-api/v2/api_keys/key-to-delete",
+            "https://external-api.demo.kalshi.co/trade-api/v2/api_keys/key-to-delete",
             headers=ANY,
             timeout=ANY,
         )
@@ -171,7 +171,7 @@ class TestAPILimits:
         assert limits.write_limit == 10
         client._session.request.assert_called_with(
             "GET",
-            "https://demo-api.kalshi.co/trade-api/v2/account/limits",
+            "https://external-api.demo.kalshi.co/trade-api/v2/account/limits",
             headers=ANY,
             timeout=ANY,
         )

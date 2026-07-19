@@ -47,7 +47,7 @@ def test_get_positions_workflow(client, mock_response):
     # Verify endpoint called
     client._session.request.assert_called_with(
         "GET",
-        "https://demo-api.kalshi.co/trade-api/v2/portfolio/positions?limit=100",
+        "https://external-api.demo.kalshi.co/trade-api/v2/portfolio/positions?limit=100",
         headers=ANY,
         timeout=ANY,
     )
@@ -121,7 +121,7 @@ def test_get_fills_workflow(client, mock_response):
     # Verify endpoint called
     client._session.request.assert_called_with(
         "GET",
-        "https://demo-api.kalshi.co/trade-api/v2/portfolio/fills?limit=100",
+        "https://external-api.demo.kalshi.co/trade-api/v2/portfolio/fills?limit=100",
         headers=ANY,
         timeout=ANY,
     )
@@ -177,7 +177,7 @@ def test_get_order_by_id(client, mock_response):
     # Verify correct endpoint called
     client._session.request.assert_called_with(
         "GET",
-        "https://demo-api.kalshi.co/trade-api/v2/portfolio/events/orders/order-abc-123",
+        "https://external-api.demo.kalshi.co/trade-api/v2/portfolio/events/orders/order-abc-123",
         headers=ANY,
         timeout=ANY,
     )
@@ -220,7 +220,7 @@ def test_cancel_order(client, mock_response):
     # Verify DELETE request
     client._session.request.assert_called_with(
         "DELETE",
-        "https://demo-api.kalshi.co/trade-api/v2/portfolio/events/orders/order-abc-123",
+        "https://external-api.demo.kalshi.co/trade-api/v2/portfolio/events/orders/order-abc-123",
         headers=ANY,
         timeout=ANY,
     )
@@ -361,7 +361,7 @@ def test_order_refresh(client, mock_response):
     # Verify GET to order endpoint
     client._session.request.assert_called_with(
         "GET",
-        "https://demo-api.kalshi.co/trade-api/v2/portfolio/events/orders/order-abc-123",
+        "https://external-api.demo.kalshi.co/trade-api/v2/portfolio/events/orders/order-abc-123",
         headers=ANY,
         timeout=ANY,
     )

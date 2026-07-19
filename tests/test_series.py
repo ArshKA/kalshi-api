@@ -31,7 +31,7 @@ class TestGetSeries:
         assert series.category == "economics"
         client._session.request.assert_called_with(
             "GET",
-            "https://demo-api.kalshi.co/trade-api/v2/series/INXD",
+            "https://external-api.demo.kalshi.co/trade-api/v2/series/INXD",
             headers=ANY,
             timeout=ANY,
         )
@@ -224,7 +224,7 @@ class TestGetTrades:
         assert trades[0].taker_side == "yes"
         client._session.request.assert_called_with(
             "GET",
-            "https://demo-api.kalshi.co/trade-api/v2/markets/trades?limit=100",
+            "https://external-api.demo.kalshi.co/trade-api/v2/markets/trades?limit=100",
             headers=ANY,
             timeout=ANY,
         )
