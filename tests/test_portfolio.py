@@ -705,3 +705,35 @@ def test_place_order_always_sends_required_v2_fields(client, mock_response):
     body = json.loads(client._session.request.call_args.kwargs["content"])
     assert body["time_in_force"] == "good_till_canceled"
     assert body["self_trade_prevention_type"] == "maker"
+
+
+def test_order_cancel_preserves_known_fields(client, mock_response):
+    """A V2 ack must not wipe fields the Order already knew.
+
+    cancel/amend/decrease return a thin ack with no ticker/side/price. Replacing
+    the model wholesale would blank them on an object that was fully populated.
+    """
+    from pykalshi.orders import Order
+    from pykalshi.models import OrderModel
+
+    order = Order(client, OrderModel(
+        order_id="order-abc-123",
+        ticker="KXTEST",
+        status=OrderStatus.RESTING,
+        action=Action.BUY,
+        side=Side.YES,
+        yes_price_dollars="0.55",
+        remaining_count_fp="10.00",
+    ))
+
+    client._session.request.return_value = mock_response(
+        {"order_id": "order-abc-123", "reduced_by": "10.00", "ts_ms": 1}
+    )
+
+    order.cancel()
+
+    assert order.status == OrderStatus.CANCELED   # updated from the ack
+    assert order.ticker == "KXTEST"               # preserved
+    assert order.data.action == Action.BUY        # preserved
+    assert order.data.side == Side.YES            # preserved
+    assert order.data.yes_price_dollars == "0.55" # preserved

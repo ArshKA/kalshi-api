@@ -77,6 +77,20 @@ class Order:
 
     # --- Domain logic ---
 
+    def _merge(self, updated: OrderModel) -> None:
+        """Overlay a server response onto the current model.
+
+        The V2 write endpoints return a thin acknowledgement (order_id, counts,
+        ts_ms) rather than a full order, so a wholesale replacement would drop
+        ticker/side/price from an object that already knew them. Only fields the
+        response actually carries are overwritten.
+        """
+        merged = self.data.model_dump()
+        for key, value in updated.model_dump().items():
+            if value is not None and not (key == "ticker" and value == ""):
+                merged[key] = value
+        self.data = OrderModel.model_validate(merged)
+
     def cancel(self) -> Order:
         """Cancel this order.
 
@@ -84,7 +98,7 @@ class Order:
             Self with updated data (status will be CANCELED).
         """
         updated = self._client.portfolio.cancel_order(self.order_id)
-        self.data = updated.data
+        self._merge(updated.data)
         return self
 
     def amend(
@@ -113,7 +127,7 @@ class Order:
             action=self.action,
             side=self.side,
         )
-        self.data = updated.data
+        self._merge(updated.data)
         return self
 
     def decrease(self, reduce_by_fp: str) -> Order:
@@ -126,7 +140,7 @@ class Order:
             Self with updated data.
         """
         updated = self._client.portfolio.decrease_order(self.order_id, reduce_by_fp)
-        self.data = updated.data
+        self._merge(updated.data)
         return self
 
     def refresh(self) -> Order:

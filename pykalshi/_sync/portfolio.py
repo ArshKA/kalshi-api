@@ -580,7 +580,6 @@ class Portfolio:
                     f"count_fp must be a whole number, got {count_fp}"
                 )
 
-
     @staticmethod
     def _v2_book_side(action: Action | str | None, side: Side | str | None) -> str:
         """Map v1 (action, side) onto the V2 single-book side.

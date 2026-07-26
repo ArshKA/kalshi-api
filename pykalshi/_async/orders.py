@@ -76,6 +76,20 @@ class AsyncOrder:
 
     # --- Domain logic ---
 
+    def _merge(self, updated: OrderModel) -> None:
+        """Overlay a server response onto the current model.
+
+        The V2 write endpoints return a thin acknowledgement (order_id, counts,
+        ts_ms) rather than a full order, so a wholesale replacement would drop
+        ticker/side/price from an object that already knew them. Only fields the
+        response actually carries are overwritten.
+        """
+        merged = self.data.model_dump()
+        for key, value in updated.model_dump().items():
+            if value is not None and not (key == "ticker" and value == ""):
+                merged[key] = value
+        self.data = OrderModel.model_validate(merged)
+
     async def cancel(self) -> AsyncOrder:
         """Cancel this order.
 
@@ -83,7 +97,7 @@ class AsyncOrder:
             Self with updated data (status will be CANCELED).
         """
         updated = await self._client.portfolio.cancel_order(self.order_id)
-        self.data = updated.data
+        self._merge(updated.data)
         return self
 
     async def amend(
@@ -112,7 +126,7 @@ class AsyncOrder:
             action=self.action,
             side=self.side,
         )
-        self.data = updated.data
+        self._merge(updated.data)
         return self
 
     async def decrease(self, reduce_by_fp: str) -> AsyncOrder:
@@ -125,7 +139,7 @@ class AsyncOrder:
             Self with updated data.
         """
         updated = await self._client.portfolio.decrease_order(self.order_id, reduce_by_fp)
-        self.data = updated.data
+        self._merge(updated.data)
         return self
 
     async def refresh(self) -> AsyncOrder:
