@@ -409,3 +409,30 @@ class TestWebSocketWireShapes:
         assert m.dollar_volume == 12345
         assert m.dollar_open_interest == 999
         assert m.yes_bid_size_fp == "10" and m.ts_ms == 7
+
+    def test_legacy_pair_avoids_a_needless_fetch(self, client, mock_response):
+        """Supplying action+side must not trigger a get_order.
+
+        The V2 body needs book_side, but when the caller gives the legacy pair
+        we can derive it locally. Fetching instead costs a round-trip on every
+        amend and 404s against read-after-write lag right after a place.
+        """
+        import json
+        from pykalshi.enums import Action, Side
+
+        client._session.request.return_value = mock_response(
+            {"order_id": "o1", "ts_ms": 1})
+
+        client.portfolio.amend_order(
+            "o1", count_fp="1", yes_price_dollars="0.02",
+            ticker="KXTEST", action=Action.BUY, side=Side.NO,
+        )
+
+        assert client._session.request.call_count == 1, (
+            "amend should not have fetched the order"
+        )
+        call = client._session.request.call_args
+        assert call.args[0] == "POST"
+        body = json.loads(call.kwargs["content"])
+        assert body["side"] == "ask"       # buy NO -> ask, derived locally
+        assert body["count"] == "1"

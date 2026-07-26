@@ -173,6 +173,12 @@ class Portfolio:
         # AmendOrderV2Request requires ticker, side, price and count, so fetch
         # the original order for anything the caller left out (including price,
         # which the v1 body did not need).
+        # Resolve book_side locally when the caller supplied the legacy pair --
+        # fetching the order just to recompute something we can derive costs a
+        # round-trip, and races query-exchange right after a place.
+        if book_side is None:
+            book_side = book_side_from_order_legacy(action, side)
+
         if (ticker is None or book_side is None
                 or count_fp is None or yes_price_dollars is None):
             original = self.get_order(order_id)
