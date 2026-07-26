@@ -24,7 +24,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # WebSocket endpoints
-DEFAULT_WS_BASE = "wss://api.elections.kalshi.com/trade-api/ws/v2"
+DEFAULT_WS_BASE = "wss://external-api-ws.kalshi.com/trade-api/ws/v2"
 DEMO_WS_BASE = "wss://external-api-ws.demo.kalshi.co/trade-api/ws/v2"
 _WS_SIGN_PATH = "/trade-api/ws/v2"
 
