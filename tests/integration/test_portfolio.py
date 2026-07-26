@@ -672,25 +672,34 @@ class TestV2OrderSurface:
             f"read hit a V2 path, which 404s: {gets}"
         )
 
-    def test_buy_no_rests_as_yes_side_at_complementary_price(
-        self, client, market_for_orders
-    ):
-        """buy NO @ 0.99 must rest as YES @ 0.01.
+    def test_buy_no_is_normalised_to_a_yes_side_sell(self, client, market_for_orders):
+        """buy NO @ 0.01 must rest as sell YES @ 0.99.
 
         V2 quotes a single YES-denominated book, so the client converts
-        (buy, NO) -> ask at 1 - price. If that mapping were inverted the order
-        would rest on the wrong side at the wrong price, and every other test
-        here would still pass -- they only check order_id and status.
+        (buy, NO, p) -> ask at 1 - p, and the exchange stores it as a YES-side
+        sell. If that conversion inverted, the order would rest on the wrong
+        side at the wrong price and nothing else in this suite would notice --
+        the other tests only check order_id and status.
+
+        Priced as an ask at 0.99, far above any book, so it cannot fill. (The
+        mirror image, an ask at 0.01, would cross and post_only rejects it with
+        400 invalid_order.)
         """
         order = client.portfolio.place_order(
             market_for_orders, action=Action.BUY, side=Side.NO,
-            count_fp="1", no_price_dollars="0.99",
+            count_fp="1", no_price_dollars="0.01",
         )
         try:
+            # The returned Order echoes the caller's framing...
+            assert order.data.side == Side.NO
+            assert float(order.data.yes_price_dollars) == pytest.approx(0.99)
+
+            # ...while the exchange reports the normalised YES-side sell.
             fetched = self._await_order(client, order.order_id)
-            assert float(fetched.data.yes_price_dollars) == pytest.approx(0.01)
-            assert fetched.data.side == Side.NO
-            assert fetched.data.action == Action.BUY
+            assert float(fetched.data.yes_price_dollars) == pytest.approx(0.99)
+            assert float(fetched.data.no_price_dollars) == pytest.approx(0.01)
+            assert fetched.data.side == Side.YES
+            assert fetched.data.action == Action.SELL
         finally:
             client.portfolio.cancel_order(order.order_id)
 
@@ -706,7 +715,10 @@ class TestV2OrderSurface:
             count_fp="1", yes_price_dollars="0.01",
         )
         try:
-            client.portfolio.amend_order(order.order_id, count_fp="3")
+            self._await_order(client, order.order_id)
+            client.portfolio.amend_order(
+                order.order_id, count_fp="3", yes_price_dollars="0.01",
+            )
 
             after = self._await_order(client, order.order_id)
             assert float(after.data.remaining_count_fp) == pytest.approx(3.0)

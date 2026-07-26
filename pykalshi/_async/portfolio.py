@@ -626,6 +626,12 @@ class AsyncPortfolio:
         model from the ack plus the request context the caller already supplied.
         This preserves the documented `-> Order` return contract. Fields that
         neither the ack nor the caller provides are left unset.
+
+        action/side echo what the caller asked for. The V2 book is
+        YES-denominated, so the exchange normalises a buy of NO into a sell of
+        YES: an order placed as (buy, NO, no_price 0.01) reads back from
+        GET /portfolio/orders/{id} as (sell, YES, yes_price 0.99). Both describe
+        the same resting order at the same price.
         """
         data: dict = {
             "order_id": response["order_id"],

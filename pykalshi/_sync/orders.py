@@ -118,6 +118,13 @@ class Order:
         Returns:
             Self with updated data.
         """
+        # V2 amend requires a price. We already hold one, so pass it rather than
+        # let amend_order re-fetch the order -- that is an extra round-trip on
+        # every count-only amend, and it 404s if query-exchange has not yet
+        # indexed a freshly placed order.
+        if yes_price_dollars is None and no_price_dollars is None:
+            yes_price_dollars = self.data.yes_price_dollars
+
         updated = self._client.portfolio.amend_order(
             self.order_id,
             count_fp=count_fp or self.remaining_count_fp,
