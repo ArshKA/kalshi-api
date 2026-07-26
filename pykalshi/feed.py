@@ -345,6 +345,20 @@ class MarketLifecycleMessage(BaseModel):
     price_ranges: list[dict] | None = None
     event_ticker: str | None = None
 
+    # Emitted on `metadata_updated` events (and `additional_metadata` on
+    # `created`). Previously unmodelled, so extra="ignore" silently dropped the
+    # entire payload of a metadata_updated frame -- the message arrived with
+    # nothing on it but the ticker and event_type.
+    #
+    # strike_type governs how the strikes are read: "between" uses both,
+    # "greater" floor only, "less" cap only.
+    strike_type: str | None = None
+    floor_strike: float | None = None
+    cap_strike: float | None = None
+    custom_strike: dict | None = None
+    yes_sub_title: str | None = None
+    additional_metadata: dict | None = None
+
     model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
 

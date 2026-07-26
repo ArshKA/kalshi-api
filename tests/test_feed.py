@@ -12,6 +12,7 @@ from pykalshi.feed import (
     TradeMessage,
     FillMessage,
     PositionMessage,
+    MarketLifecycleMessage,
     DEFAULT_WS_BASE,
     DEMO_WS_BASE,
     _parse_ts,
@@ -501,6 +502,49 @@ class TestMessageModels:
         )
         assert msg.yes_bid_dollars == "0.45"
         assert msg.ts == 1234567890
+
+    def test_lifecycle_metadata_updated_frame(self):
+        """Issue #21: a metadata_updated frame kept none of its payload.
+
+        strike_type / floor_strike / cap_strike / custom_strike / yes_sub_title
+        were unmodelled, so extra="ignore" dropped every one of them and the
+        message arrived carrying only the ticker and event_type.
+        """
+        msg = MarketLifecycleMessage(
+            market_ticker="KXHIGHNY-26JUL26-B53.5",
+            event_type="metadata_updated",
+            strike_type="between",
+            floor_strike=53.0,
+            cap_strike=54.0,
+            custom_strike={"team": "NYY"},
+            yes_sub_title="53-54F",
+        )
+        assert msg.strike_type == "between"
+        assert msg.floor_strike == 53.0
+        assert msg.cap_strike == 54.0
+        assert msg.custom_strike == {"team": "NYY"}
+        assert msg.yes_sub_title == "53-54F"
+
+    def test_lifecycle_additional_metadata_on_created(self):
+        """additional_metadata is emitted on `created` frames."""
+        msg = MarketLifecycleMessage(
+            market_ticker="TEST",
+            event_type="created",
+            additional_metadata={
+                "title": "Will it rain?",
+                "yes_sub_title": "Yes",
+                "rules_primary": "Resolves per NWS.",
+            },
+        )
+        assert msg.additional_metadata["title"] == "Will it rain?"
+        assert msg.additional_metadata["rules_primary"] == "Resolves per NWS."
+
+    def test_lifecycle_metadata_fields_default_none(self):
+        """Frames that aren't metadata_updated leave the whole family unset."""
+        msg = MarketLifecycleMessage(market_ticker="TEST", event_type="settled")
+        for f in ("strike_type", "floor_strike", "cap_strike",
+                  "custom_strike", "yes_sub_title", "additional_metadata"):
+            assert getattr(msg, f) is None, f
 
     def test_orderbook_snapshot_model(self):
         """OrderbookSnapshotMessage parses correctly."""
