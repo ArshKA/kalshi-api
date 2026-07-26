@@ -33,6 +33,20 @@ from __future__ import annotations
 # order it denotes the leg being transacted and must be combined with
 # `action`. The published equivalence table describes the ORDER reading.
 #
+# The decisive evidence, if this is ever questioned: join a fill to the order
+# that produced it. An order's direction is unambiguous. Across every sell fill
+# in the account, fill.book_side == parent_order.book_side (9/9):
+#
+#   fill sell/no  (book_side=ask) <- order sell/yes (book_side=ask, long no)
+#   fill sell/yes (book_side=bid) <- order sell/no  (book_side=bid, long yes)
+#
+# Note the legacy pair is INVERTED between the two surfaces for the same
+# resting order, while book_side is identical. So a fill reporting `sell/yes`
+# came from a long-YES order and increased the yes position -- the opposite of
+# what the order table would say if applied to the fill's own fields. That is
+# the trap: it is not that book_side is ambiguous, it is that `side` means
+# something different on each surface.
+#
 # Deprecation status (checked 2026-07-25): the changelog entry "Normalized
 # outcome_side and book_side on Order, Fill, and Trade responses" marks
 # `action`, `side`, `is_yes`, `purchased_side` and `taker_side` deprecated,

@@ -436,3 +436,62 @@ class TestWebSocketWireShapes:
         body = json.loads(call.kwargs["content"])
         assert body["side"] == "ask"       # buy NO -> ask, derived locally
         assert body["count"] == "1"
+
+
+class TestFillDirectionAgainstParentOrder:
+    """The fill rule, justified by the order that produced the fill.
+
+    An order's direction is unambiguous. Joining every sell fill in a live
+    account to its parent order gives, 9 times out of 9:
+
+        fill sell/no  (book_side=ask) <- order sell/yes (book_side=ask, long no)
+        fill sell/yes (book_side=bid) <- order sell/no  (book_side=bid, long yes)
+
+    The legacy pair is INVERTED between the two surfaces for one unchanged
+    order, while book_side is identical. So a fill reporting `sell/yes` came
+    from a long-YES order and increased the yes position -- the opposite of
+    what the order table gives when misapplied to the fill's own fields.
+
+    Corroborated by Kalshi's changelog: "Both BUY YES or SELL NO result in
+    purchased_side = YES", and bid == yes by definition.
+    """
+
+    PAIRS = [
+        # (fill action/side, fill book_side, parent action/side, parent book_side, yes delta)
+        ("sell", "no",  "ask", "sell", "yes", -1),
+        ("sell", "yes", "bid", "sell", "no",  +1),
+        ("buy",  "no",  "ask", "buy",  "no",  -1),
+        ("buy",  "yes", "bid", "buy",  "yes", +1),
+    ]
+
+    @pytest.mark.parametrize(
+        "f_action,f_side,book,p_action,p_side,delta", PAIRS)
+    def test_fill_and_parent_agree_on_book_side(
+            self, f_action, f_side, book, p_action, p_side, delta):
+        fill = FillModel.model_validate({
+            "trade_id": "t", "ticker": "T", "order_id": "o",
+            "action": f_action, "side": f_side, "count_fp": "1",
+            "yes_price_dollars": "0.50"})
+        parent = OrderModel.model_validate({
+            "order_id": "o", "ticker": "T", "status": "executed",
+            "action": p_action, "side": p_side})
+
+        assert fill.book_side == BookSide(book)
+        assert parent.book_side == BookSide(book), (
+            "fill and its parent order must agree on book_side even though "
+            "their legacy (action, side) pairs differ"
+        )
+        assert fill.yes_delta_fp == delta
+
+    def test_order_rule_misapplied_to_a_fill_inverts_the_sells(self):
+        """Guards against 'just use action and side' being reintroduced.
+
+        Deriving a fill's direction with the order mapper flips exactly the two
+        sell rows -- the failure this whole module exists to prevent.
+        """
+        for action, side in (("sell", "yes"), ("sell", "no")):
+            correct = book_side_from_fill_legacy(side)
+            misapplied = book_side_from_order_legacy(action, side)
+            assert correct != misapplied, (
+                f"expected the order mapper to disagree on fill {action}/{side}"
+            )
