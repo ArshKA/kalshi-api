@@ -1,8 +1,27 @@
 from __future__ import annotations
 from decimal import Decimal
 from functools import cached_property
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field
-from .enums import OrderStatus, Side, Action, OrderType, MarketStatus
+from typing import Annotated
+from pydantic import (
+    AliasChoices, BaseModel, BeforeValidator, ConfigDict, Field, model_validator,
+)
+from .enums import (
+    OrderStatus, Side, Action, OrderType, MarketStatus, BookSide, OutcomeSide,
+)
+from ._utils import (
+    blank_to_none,
+    book_side_from_fill_legacy,
+    book_side_from_order_legacy,
+    book_side_from_outcome_side,
+    outcome_side_from_book_side,
+)
+
+# Legacy direction fields may arrive as "" once Kalshi retires them; "" is not
+# a valid enum member, so coerce it away before validation.
+_LegacySide = Annotated[Side | None, BeforeValidator(blank_to_none)]
+_LegacyAction = Annotated[Action | None, BeforeValidator(blank_to_none)]
+_OptBookSide = Annotated[BookSide | None, BeforeValidator(blank_to_none)]
+_OptOutcomeSide = Annotated[OutcomeSide | None, BeforeValidator(blank_to_none)]
 
 
 class HistoricalCutoffResponse(BaseModel):
@@ -155,8 +174,16 @@ class OrderModel(BaseModel):
     order_id: str
     ticker: str
     status: OrderStatus
-    action: Action | None = None
-    side: Side | None = None
+
+    # Canonical direction. Prefer these; see pykalshi.enums.BookSide.
+    book_side: _OptBookSide = None
+    outcome_side: _OptOutcomeSide = None
+
+    # Deprecated by Kalshi -- read book_side instead. Retained because the
+    # server still sends them and callers still read them.
+    action: _LegacyAction = None
+    side: _LegacySide = None
+
     type: OrderType | None = None
 
     # Pricing (dollar strings)
@@ -180,9 +207,47 @@ class OrderModel(BaseModel):
     created_time: str | None = None
     last_update_time: str | None = None
     expiration_time: str | None = None
+    subaccount_number: int | None = None
+    exchange_index: int | None = None
+    self_trade_prevention_type: str | None = None
+    order_group_id: str | None = None
 
 
     model_config = ConfigDict(extra="ignore")
+
+    @model_validator(mode="after")
+    def _fill_canonical_direction(self):
+        """Back-fill canonical direction when the server omits it.
+
+        The server supplies book_side/outcome_side today and they win outright.
+        This only covers older payloads and hand-built models, and uses the
+        ORDER mapping -- correct here, wrong for fills.
+        """
+        if self.book_side is None and self.outcome_side is not None:
+            object.__setattr__(
+                self, "book_side",
+                BookSide(book_side_from_outcome_side(self.outcome_side)),
+            )
+        if self.book_side is None:
+            derived = book_side_from_order_legacy(self.action, self.side)
+            if derived:
+                object.__setattr__(self, "book_side", BookSide(derived))
+        if self.outcome_side is None and self.book_side is not None:
+            object.__setattr__(
+                self, "outcome_side",
+                OutcomeSide(outcome_side_from_book_side(self.book_side)),
+            )
+        return self
+
+    @property
+    def is_bid(self) -> bool:
+        """True when this order is long yes (``book_side == bid``)."""
+        return self.book_side == BookSide.BID
+
+    @property
+    def is_ask(self) -> bool:
+        """True when this order is long no (``book_side == ask``)."""
+        return self.book_side == BookSide.ASK
 
 
 class BalanceModel(BaseModel):
@@ -226,20 +291,73 @@ class FillModel(BaseModel):
     trade_id: str
     ticker: str
     order_id: str
-    side: Side
-    action: Action
+
+    # Canonical direction. On a fill, book_side == bid means the fill made you
+    # longer yes; ask means longer no.
+    book_side: _OptBookSide = None
+    outcome_side: _OptOutcomeSide = None
+
+    # Deprecated by Kalshi. These were previously REQUIRED here, which made
+    # every get_fills() call raise the moment the server stopped sending them.
+    #
+    # Note the fill convention differs from the order convention: on a fill
+    # `side` is the outcome acquired and `action` carries no sign, so a
+    # sell/yes fill is long YES. Do not feed these to the order-side mapper.
+    action: _LegacyAction = None
+    side: _LegacySide = None
+
     count_fp: str
     yes_price_dollars: str = Field(validation_alias=AliasChoices('yes_price_dollars', 'yes_price_fixed'))
-    no_price_dollars: str = Field(validation_alias=AliasChoices('no_price_dollars', 'no_price_fixed'))
+    no_price_dollars: str | None = Field(default=None, validation_alias=AliasChoices('no_price_dollars', 'no_price_fixed'))
     is_taker: bool | None = None
     fill_id: str | None = None
     market_ticker: str | None = None
     fee_cost_dollars: str | None = Field(default=None, validation_alias=AliasChoices('fee_cost_dollars', 'fee_cost'))
     created_time: str | None = None
+    subaccount_number: int | None = None
     ts: int | None = None
 
 
     model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    @model_validator(mode="after")
+    def _fill_canonical_direction(self):
+        """Back-fill canonical direction using the FILL mapping.
+
+        Deliberately ignores ``action``: on a fill it carries no sign, and
+        feeding the pair to the order-side mapper inverts every sell row.
+        """
+        if self.book_side is None and self.outcome_side is not None:
+            object.__setattr__(
+                self, "book_side",
+                BookSide(book_side_from_outcome_side(self.outcome_side)),
+            )
+        if self.book_side is None:
+            derived = book_side_from_fill_legacy(self.side)
+            if derived:
+                object.__setattr__(self, "book_side", BookSide(derived))
+        if self.outcome_side is None and self.book_side is not None:
+            object.__setattr__(
+                self, "outcome_side",
+                OutcomeSide(outcome_side_from_book_side(self.book_side)),
+            )
+        return self
+
+    @property
+    def is_bid(self) -> bool:
+        """True when this fill increased the yes position."""
+        return self.book_side == BookSide.BID
+
+    @property
+    def is_ask(self) -> bool:
+        """True when this fill decreased the yes position."""
+        return self.book_side == BookSide.ASK
+
+    @property
+    def yes_delta_fp(self) -> Decimal:
+        """Signed change to the YES position from this fill."""
+        n = Decimal(self.count_fp)
+        return n if self.book_side == BookSide.BID else -n
 
     def _repr_html_(self) -> str:
         from ._repr import fill_html
@@ -534,12 +652,38 @@ class TradeModel(BaseModel):
     count_fp: str
     yes_price_dollars: str
     no_price_dollars: str
+
+    # Canonical direction. Unlike Order/Fill, the legacy field maps 1:1 here
+    # (a public trade has no action), so the alias is safe.
+    taker_outcome_side: _OptOutcomeSide = Field(
+        default=None,
+        validation_alias=AliasChoices("taker_outcome_side", "taker_side"),
+    )
+    taker_book_side: _OptBookSide = None
+
+    # Deprecated by Kalshi -- read taker_outcome_side / taker_book_side.
     taker_side: str | None = None
+
+    is_block_trade: bool | None = None
     created_time: str | None = None
     ts: int | None = None
 
 
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    @model_validator(mode="after")
+    def _fill_canonical_direction(self):
+        if self.taker_book_side is None and self.taker_outcome_side is not None:
+            object.__setattr__(
+                self, "taker_book_side",
+                BookSide(book_side_from_outcome_side(self.taker_outcome_side)),
+            )
+        if self.taker_outcome_side is None and self.taker_book_side is not None:
+            object.__setattr__(
+                self, "taker_outcome_side",
+                OutcomeSide(outcome_side_from_book_side(self.taker_book_side)),
+            )
+        return self
 
     def _repr_html_(self) -> str:
         from ._repr import trade_html
@@ -553,15 +697,25 @@ class SettlementModel(BaseModel):
     market_result: str | None = None  # "yes" or "no"
     yes_count_fp: str = "0"
     no_count_fp: str = "0"
-    yes_total_cost: int = 0
-    no_total_cost: int = 0
-    revenue: int = 0
-    value: int = 0
+    # The API returns these as fixed-point dollar STRINGS named *_dollars. The
+    # model previously declared `yes_total_cost`/`no_total_cost` as cents ints,
+    # which never matched the wire, so extra="ignore" dropped them and they
+    # stayed 0 -- silently removing cost from every pnl.
+    yes_total_cost_dollars: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("yes_total_cost_dollars", "yes_total_cost"),
+    )
+    no_total_cost_dollars: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("no_total_cost_dollars", "no_total_cost"),
+    )
+    revenue: int = 0          # cents
+    value: int | None = 0     # cents; nullable per spec
     fee_cost: str | None = None  # FixedPointDollars string (e.g. "0.3200")
     settled_time: str | None = None
 
 
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
     @property
     def net_position(self) -> str:
@@ -569,10 +723,22 @@ class SettlementModel(BaseModel):
         return str(Decimal(self.yes_count_fp) - Decimal(self.no_count_fp))
 
     @property
+    def total_cost_dollars(self) -> Decimal:
+        """Combined yes+no cost basis, in dollars."""
+        return (Decimal(self.yes_total_cost_dollars or "0")
+                + Decimal(self.no_total_cost_dollars or "0"))
+
+    @property
+    def pnl_dollars(self) -> Decimal:
+        """Net P&L in dollars (revenue - cost basis - fees)."""
+        return (Decimal(self.revenue) / 100
+                - self.total_cost_dollars
+                - Decimal(self.fee_cost or "0"))
+
+    @property
     def pnl(self) -> int:
-        """Net P&L in cents (revenue - costs - fees)."""
-        fee_cents = int(Decimal(self.fee_cost or "0") * 100)
-        return self.revenue - self.yes_total_cost - self.no_total_cost - fee_cents
+        """Net P&L in cents, truncated. See :attr:`pnl_dollars` for exact."""
+        return int(self.pnl_dollars * 100)
 
     def _repr_html_(self) -> str:
         from ._repr import settlement_html
