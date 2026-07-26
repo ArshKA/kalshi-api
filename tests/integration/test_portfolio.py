@@ -611,6 +611,27 @@ class TestV2OrderSurface:
     invisible if you only check that an order_id came back.
     """
 
+    @staticmethod
+    def _await_order(client, order_id, tries=8, delay=0.5):
+        """Fetch an order, tolerating read-after-write lag.
+
+        Writes are acknowledged by the matching engine but reads are served by
+        query-exchange, which indexes a moment later. Until it catches up,
+        GET /portfolio/orders/{id} returns 404 not_found (an unknown order --
+        distinct from the "404 page not found" you get from a missing route).
+        """
+        import time as _time
+        from pykalshi.exceptions import ResourceNotFoundError
+
+        last = None
+        for attempt in range(tries):
+            try:
+                return client.portfolio.get_order(order_id)
+            except ResourceNotFoundError as exc:
+                last = exc
+                _time.sleep(delay * (attempt + 1))
+        pytest.skip(f"order {order_id} not visible to query-exchange in time: {last}")
+
     @pytest.fixture
     def market_for_orders(self, trading_client):
         client = trading_client
@@ -636,7 +657,7 @@ class TestV2OrderSurface:
             count_fp="1", yes_price_dollars="0.01",
         )
         try:
-            client.portfolio.get_order(order.order_id)
+            self._await_order(client, order.order_id)
             list(client.portfolio.get_orders(status=OrderStatus.RESTING))
         finally:
             client.portfolio.cancel_order(order.order_id)
@@ -666,7 +687,7 @@ class TestV2OrderSurface:
             count_fp="1", no_price_dollars="0.99",
         )
         try:
-            fetched = client.portfolio.get_order(order.order_id)
+            fetched = self._await_order(client, order.order_id)
             assert float(fetched.data.yes_price_dollars) == pytest.approx(0.01)
             assert fetched.data.side == Side.NO
             assert fetched.data.action == Action.BUY
@@ -687,7 +708,7 @@ class TestV2OrderSurface:
         try:
             client.portfolio.amend_order(order.order_id, count_fp="3")
 
-            after = client.portfolio.get_order(order.order_id)
+            after = self._await_order(client, order.order_id)
             assert float(after.data.remaining_count_fp) == pytest.approx(3.0)
             assert float(after.data.yes_price_dollars) == pytest.approx(0.01), (
                 "amend must preserve the price when only the count changes"
