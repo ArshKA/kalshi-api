@@ -310,14 +310,17 @@ class TestDispatch:
             "type": "market_position",
             "sid": 5,
             "seq": 1,
+            # Real market_position wire shape: market_ticker (not ticker), and
+            # none of the REST-only exposure fields this test used to fabricate.
             "msg": {
-                "ticker": "KXTEST-A",
+                "user_id": "u-1",
+                "market_ticker": "KXTEST-A",
                 "position_fp": "10.00",
-                "market_exposure_dollars": "4.50",
+                "position_cost_dollars": "4.50",
                 "realized_pnl_dollars": "2.50",
-                "total_traded_dollars": "25.00",
-                "resting_orders_count": 2,
+                "position_fee_cost_dollars": "0.10",
                 "fees_paid_dollars": "0.50",
+                "volume_fp": "25.00",
             }
         })
         feed._dispatch(raw)
@@ -327,7 +330,9 @@ class TestDispatch:
         assert isinstance(msg, PositionMessage)
         assert msg.ticker == "KXTEST-A"
         assert msg.position_fp == "10.00"
-        assert msg.market_exposure_dollars == "4.50"
+        assert msg.market_ticker == "KXTEST-A"
+        assert msg.ticker == "KXTEST-A"  # backwards-compatible alias
+        assert msg.position_cost_dollars == "4.50"
         assert msg.realized_pnl_dollars == "2.50"
 
     def test_no_handler_registered(self, client):
@@ -548,20 +553,19 @@ class TestMessageModels:
 
     def test_position_model(self):
         """PositionMessage parses correctly."""
+        # market_position carries no ts/ts_ms on the wire.
         msg = PositionMessage(
-            ticker="KXTEST",
+            market_ticker="KXTEST",
             position_fp="10.00",
-            market_exposure_dollars="4.50",
+            position_cost_dollars="4.50",
             realized_pnl_dollars="2.50",
-            total_traded_dollars="25.00",
-            resting_orders_count=2,
+            volume_fp="25.00",
             fees_paid_dollars="0.50",
-            ts=1704067200,
         )
-        assert msg.ticker == "KXTEST"
+        assert msg.market_ticker == "KXTEST"
+        assert msg.ticker == "KXTEST"  # backwards-compatible alias
         assert msg.position_fp == "10.00"
         assert msg.realized_pnl_dollars == "2.50"
-        assert msg.ts == 1704067200
 
     def test_ticker_model_accepts_iso_ts(self):
         """Issue #18: TsField coerces ISO strings so typed models still validate."""

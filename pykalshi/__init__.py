@@ -30,12 +30,16 @@ from .feed import (
     PositionMessage,
     MarketLifecycleMessage,
     OrderGroupUpdateMessage,
+    UserOrderMessage,
+    ErrorMessage,
 )
 from .afeed import AsyncFeed
 from .enums import (
     Side,
     Action,
     OrderType,
+    BookSide,
+    OutcomeSide,
     OrderStatus,
     MarketStatus,
     CandlestickPeriod,
@@ -128,10 +132,14 @@ __all__ = [
     "PositionMessage",
     "MarketLifecycleMessage",
     "OrderGroupUpdateMessage",
+    "UserOrderMessage",
+    "ErrorMessage",
     # Enums
     "Side",
     "Action",
     "OrderType",
+    "BookSide",
+    "OutcomeSide",
     "OrderStatus",
     "MarketStatus",
     "CandlestickPeriod",

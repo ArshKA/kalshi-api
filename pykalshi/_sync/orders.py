@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import time
+from decimal import Decimal
 from typing import TYPE_CHECKING
 
 from ..models import OrderModel
-from ..enums import OrderStatus, Action, Side, OrderType
+from ..enums import OrderStatus, Action, Side, OrderType, BookSide, OutcomeSide
 
 if TYPE_CHECKING:
     from .client import KalshiClient
@@ -40,11 +41,31 @@ class Order:
         return self.data.status
 
     @property
+    def book_side(self) -> BookSide | None:
+        """Canonical direction: ``bid`` is long yes, ``ask`` is long no."""
+        return self.data.book_side
+
+    @property
+    def outcome_side(self) -> OutcomeSide | None:
+        """Canonical direction as an outcome. Equivalent to :attr:`book_side`."""
+        return self.data.outcome_side
+
+    @property
+    def is_bid(self) -> bool:
+        return self.data.is_bid
+
+    @property
+    def is_ask(self) -> bool:
+        return self.data.is_ask
+
+    @property
     def action(self) -> Action | None:
+        """Deprecated by Kalshi. Use :attr:`book_side`."""
         return self.data.action
 
     @property
     def side(self) -> Side | None:
+        """Deprecated by Kalshi. Use :attr:`book_side`."""
         return self.data.side
 
     @property
@@ -125,12 +146,20 @@ class Order:
         if yes_price_dollars is None and no_price_dollars is None:
             yes_price_dollars = self.data.yes_price_dollars
 
+        if count_fp is None:
+            # `count` is the TOTAL (filled + desired remaining). Sending the
+            # bare remaining count cancels whatever has already filled.
+            filled = Decimal(self.data.fill_count_fp or "0")
+            remaining = Decimal(self.data.remaining_count_fp or "0")
+            count_fp = str(filled + remaining)
+
         updated = self._client.portfolio.amend_order(
             self.order_id,
-            count_fp=count_fp or self.remaining_count_fp,
+            count_fp=count_fp,
             yes_price_dollars=yes_price_dollars,
             no_price_dollars=no_price_dollars,
             ticker=self.ticker,
+            book_side=self.data.book_side,
             action=self.action,
             side=self.side,
         )
@@ -199,12 +228,19 @@ class Order:
         return hash(self.data.order_id)
 
     def __repr__(self) -> str:
-        action = self.action.value.upper() if self.action else "?"
-        side = self.side.value.upper() if self.side else "?"
+        # Render the canonical direction. The legacy action/side pair flips
+        # representation for one unchanged order (buy NO reads back as sell
+        # YES), so a repr built from it appears to change on refresh.
+        if self.book_side is not None:
+            direction = self.book_side.value.upper()
+        elif self.action and self.side:
+            direction = f"{self.action.value.upper()} {self.side.value.upper()}"
+        else:
+            direction = "?"
         price = self.yes_price_dollars if self.yes_price_dollars is not None else self.no_price_dollars
         filled = self.fill_count_fp or "0"
         total = self.initial_count_fp or "0"
-        return f"<Order {self.ticker} | {action} {side} @${price} | {filled}/{total} | {self.status.value}>"
+        return f"<Order {self.ticker} | {direction} @${price} | {filled}/{total} | {self.status.value}>"
 
     def _repr_html_(self) -> str:
         from .._repr import order_html

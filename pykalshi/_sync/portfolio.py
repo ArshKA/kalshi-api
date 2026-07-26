@@ -7,9 +7,14 @@ from typing import TYPE_CHECKING
 from urllib.parse import urlencode
 
 from .orders import Order
-from ..enums import Action, Side, OrderStatus, TimeInForce, SelfTradePrevention, PositionCountFilter
+from ..enums import Action, Side, OrderStatus, TimeInForce, SelfTradePrevention, PositionCountFilter, BookSide
 from ..dataframe import DataFrameList
-from .._utils import normalize_ticker, normalize_tickers
+from .._utils import (
+    book_side_from_order_legacy,
+    normalize_ticker,
+    normalize_tickers,
+    outcome_side_from_book_side,
+)
 from ..models import (
     OrderModel, BalanceModel, PositionModel, FillModel,
     SettlementModel, QueuePositionModel, OrderGroupModel,
@@ -97,6 +102,7 @@ class Portfolio:
             response,
             ticker=order_data.get("ticker"),
             status=self._v2_status_from_ack(response),
+            book_side=order_data.get("side"),
             action=action,
             side=side,
             yes_price_dollars=order_data.get("price"),
@@ -130,8 +136,9 @@ class Portfolio:
         yes_price_dollars: str | None = None,
         no_price_dollars: str | None = None,
         subaccount: int | None = None,
-        # Required by API but can be fetched from existing order
+        # Required by the API but fetched from the existing order if omitted
         ticker: str | None = None,
+        book_side: BookSide | str | None = None,
         action: Action | None = None,
         side: Side | None = None,
     ) -> Order:
@@ -139,13 +146,18 @@ class Portfolio:
 
         Args:
             order_id: ID of the order to amend.
-            count_fp: New total contract count (fixed-point string).
+            count_fp: New TOTAL contract count -- already-filled plus the
+                remaining size you want resting afterwards. This is the API's
+                semantics, not "the new resting size"; passing the remaining
+                size alone silently shrinks a partially filled order.
             yes_price_dollars: New YES price (dollar string).
             no_price_dollars: New NO price (dollar string). Converted internally.
             subaccount: Subaccount number (0 for primary, 1-32 for subaccounts).
-            ticker: Market ticker (fetched from order if not provided).
-            action: Order action (fetched from order if not provided).
-            side: Order side (fetched from order if not provided).
+            ticker: Market ticker (fetched from the order if not provided).
+            book_side: ``bid``/``ask``. Preferred over action/side; fetched
+                from the order if not provided.
+            action: Deprecated. Legacy order action.
+            side: Deprecated. Legacy order side.
         """
         if count_fp is None and yes_price_dollars is None and no_price_dollars is None:
             raise ValueError("Must specify at least one amend field")
@@ -161,14 +173,21 @@ class Portfolio:
         # AmendOrderV2Request requires ticker, side, price and count, so fetch
         # the original order for anything the caller left out (including price,
         # which the v1 body did not need).
-        if (ticker is None or action is None or side is None
+        if (ticker is None or book_side is None
                 or count_fp is None or yes_price_dollars is None):
             original = self.get_order(order_id)
             ticker = ticker or original.ticker
-            action = action or original.action
-            side = side or original.side
+            book_side = book_side or original.data.book_side
+            if book_side is None:
+                # Only reached on a payload with no canonical field.
+                book_side = book_side_from_order_legacy(
+                    action or original.action, side or original.side)
             if count_fp is None:
-                count_fp = original.remaining_count_fp
+                # `count` is the TOTAL, so preserve what has already filled --
+                # sending the bare remaining count cancels the filled portion.
+                filled = Decimal(original.data.fill_count_fp or "0")
+                remaining = Decimal(original.data.remaining_count_fp or "0")
+                count_fp = str(filled + remaining)
             if yes_price_dollars is None:
                 yes_price_dollars = original.data.yes_price_dollars
                 if yes_price_dollars is None and original.data.no_price_dollars is not None:
@@ -181,10 +200,17 @@ class Portfolio:
                 "amend requires a price; none was supplied and none could be "
                 "resolved from the existing order"
             )
+        if book_side is None:
+            book_side = book_side_from_order_legacy(action, side)
+        if book_side is None:
+            raise ValueError(
+                "amend requires a book_side; none was supplied and none could "
+                "be resolved from the existing order"
+            )
 
         body: dict = {
             "ticker": ticker,
-            "side": Portfolio._v2_book_side(action, side),
+            "side": getattr(book_side, "value", book_side),
             "price": f"{Decimal(yes_price_dollars):.4f}",
             "count": count_fp,
         }
@@ -196,8 +222,7 @@ class Portfolio:
             response,
             ticker=ticker,
             status=self._v2_status_from_ack(response),
-            action=action,
-            side=side,
+            book_side=body["side"],
             yes_price_dollars=body["price"],
         )
         return Order(self._client, model)
@@ -583,10 +608,15 @@ class Portfolio:
 
     @staticmethod
     def _v2_book_side(action: Action | str | None, side: Side | str | None) -> str:
-        """Map v1 (action, side) onto the V2 single-book side.
+        """Map an ORDER's legacy (action, side) onto the V2 single-book side.
 
         The V2 book is YES-denominated, so buying NO is the same as selling YES.
         Accepts enums or their raw string values (batch payloads use strings).
+
+        ORDER SURFACE ONLY. Fills use a different convention -- there ``side``
+        is the outcome acquired and ``action`` carries no sign -- so applying
+        this to a fill inverts every ``sell`` row. Use ``FillModel.book_side``,
+        which the server supplies directly.
         """
         a = action.value if isinstance(action, Action) else action
         sd = side.value if isinstance(side, Side) else side
@@ -612,6 +642,7 @@ class Portfolio:
         *,
         ticker: str | None,
         status: OrderStatus,
+        book_side: BookSide | str | None = None,
         action: Action | None = None,
         side: Side | None = None,
         yes_price_dollars: str | None = None,
@@ -646,6 +677,15 @@ class Portfolio:
             data["fill_count_fp"] = response["fill_count"]
         if response.get("remaining_count") is not None:
             data["remaining_count_fp"] = response["remaining_count"]
+        # Canonical direction: the caller always knows it -- it is exactly what
+        # went on the wire -- so a synthesised order carries the same fields a
+        # fetched one does.
+        bs = getattr(book_side, "value", book_side)
+        if bs is None:
+            bs = book_side_from_order_legacy(action, side)
+        if bs is not None:
+            data["book_side"] = bs
+            data["outcome_side"] = outcome_side_from_book_side(bs)
         if action is not None:
             data["action"] = action.value if isinstance(action, Action) else action
         if side is not None:
@@ -697,6 +737,10 @@ class Portfolio:
                 "status": item.get("status")
                 or Portfolio._v2_status_from_ack(item),
             }
+            bs = item.get("book_side") or req.get("side")
+            if bs:
+                entry["book_side"] = bs
+                entry["outcome_side"] = outcome_side_from_book_side(bs)
             # The V2 request price is already YES-denominated.
             if req.get("price") is not None:
                 entry["yes_price_dollars"] = req["price"]
