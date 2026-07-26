@@ -14,7 +14,7 @@ import time
 from datetime import datetime
 from typing import Annotated, Any, Callable, Union, TYPE_CHECKING
 
-from pydantic import BaseModel, BeforeValidator, ConfigDict
+from pydantic import AliasChoices, BaseModel, BeforeValidator, ConfigDict, Field, model_validator
 
 from ._utils import normalize_ticker, normalize_tickers
 
@@ -63,16 +63,29 @@ class TickerMessage(BaseModel):
 
 
     market_ticker: str
+    market_id: str | None = None
     price_dollars: str | None = None
     yes_bid_dollars: str | None = None
     yes_ask_dollars: str | None = None
+    yes_bid_size_fp: str | None = None
+    yes_ask_size_fp: str | None = None
+    last_trade_size_fp: str | None = None
     volume_fp: str | None = None
     open_interest_fp: str | None = None
-    dollar_volume_dollars: str | None = None
-    dollar_open_interest_dollars: str | None = None
-    ts: TsField = None
+    # Wire sends `dollar_volume` / `dollar_open_interest` as integers. The old
+    # `*_dollars` string fields never matched and were always None.
+    dollar_volume: int | None = Field(
+        default=None,
+        validation_alias=AliasChoices("dollar_volume", "dollar_volume_dollars"),
+    )
+    dollar_open_interest: int | None = Field(
+        default=None,
+        validation_alias=AliasChoices("dollar_open_interest", "dollar_open_interest_dollars"),
+    )
+    ts_ms: int | None = None
+    ts: TsField = None  # deprecated by Kalshi; seconds, not ms -- prefer ts_ms
 
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
 
 class OrderbookSnapshotMessage(BaseModel):
@@ -84,10 +97,29 @@ class OrderbookSnapshotMessage(BaseModel):
 
 
     market_ticker: str
-    yes_dollars: list[tuple[str, str]] | None = None  # [(price_dollars, quantity_fp), ...]
-    no_dollars: list[tuple[str, str]] | None = None
+    market_id: str | None = None
+    # The wire field names carry an `_fp` suffix. The model previously declared
+    # them without it, so both were always None and OrderbookManager wiped the
+    # book to empty on every snapshot. (The REST orderbook genuinely has no
+    # suffix -- models.Orderbook is correct and must not be renamed.)
+    yes_dollars_fp: list[tuple[str, str]] | None = Field(
+        default=None, validation_alias=AliasChoices("yes_dollars_fp", "yes_dollars"),
+    )
+    no_dollars_fp: list[tuple[str, str]] | None = Field(
+        default=None, validation_alias=AliasChoices("no_dollars_fp", "no_dollars"),
+    )
 
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    @property
+    def yes_dollars(self) -> list[tuple[str, str]] | None:
+        """Backwards-compatible alias for :attr:`yes_dollars_fp`."""
+        return self.yes_dollars_fp
+
+    @property
+    def no_dollars(self) -> list[tuple[str, str]] | None:
+        """Backwards-compatible alias for :attr:`no_dollars_fp`."""
+        return self.no_dollars_fp
 
 
 class OrderbookDeltaMessage(BaseModel):
@@ -98,9 +130,14 @@ class OrderbookDeltaMessage(BaseModel):
 
 
     market_ticker: str
+    market_id: str | None = None
     price_dollars: str
     delta_fp: str  # Positive = added, negative = removed
-    side: str  # "yes" or "no"
+    side: str  # "yes" or "no" -- orderbook side, NOT the deprecated order side
+    client_order_id: str | None = None
+    subaccount: int | None = None
+    ts_ms: int | None = None
+    ts: TsField = None
 
     model_config = ConfigDict(extra="ignore")
 
@@ -113,36 +150,151 @@ class TradeMessage(BaseModel):
 
 
     market_ticker: str | None = None
-    ticker: str | None = None
     trade_id: str | None = None
     count_fp: str | None = None
     yes_price_dollars: str | None = None
     no_price_dollars: str | None = None
-    taker_side: str | None = None
+    # Canonical direction. A public trade has no `action`, so the legacy
+    # `taker_side` maps 1:1 and the alias is safe here (unlike on Fill).
+    taker_outcome_side: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("taker_outcome_side", "taker_side"),
+    )
+    taker_book_side: str | None = None
+    taker_side: str | None = None  # deprecated by Kalshi
+    ts_ms: int | None = None
     ts: TsField = None
 
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    @model_validator(mode="after")
+    def _canonical_direction(self):
+        if self.taker_book_side is None and self.taker_outcome_side:
+            object.__setattr__(
+                self, "taker_book_side",
+                "bid" if self.taker_outcome_side == "yes" else "ask",
+            )
+        if self.taker_outcome_side is None and self.taker_book_side:
+            object.__setattr__(
+                self, "taker_outcome_side",
+                "yes" if self.taker_book_side == "bid" else "no",
+            )
+        return self
 
 
 class FillMessage(BaseModel):
     """User fill notification (private channel).
 
     Sent when your orders are filled.
+
+    Branch on :attr:`book_side`: ``bid`` means the fill increased your yes
+    position, ``ask`` means it decreased it. Do NOT derive direction from
+    ``action``/``side`` -- on a fill ``side`` is the outcome acquired and
+    ``action`` carries no sign, which is the opposite of the order convention.
     """
 
 
     trade_id: str | None = None
-    ticker: str | None = None
+    # Wire sends `market_ticker`. The model previously declared only `ticker`,
+    # so it was always None and `msg.market_ticker` raised AttributeError.
+    market_ticker: str | None = Field(
+        default=None, validation_alias=AliasChoices("market_ticker", "ticker"),
+    )
     order_id: str | None = None
+
+    # Canonical direction.
+    book_side: str | None = None
+    outcome_side: str | None = None
+
+    # Deprecated by Kalshi.
     side: str | None = None
     action: str | None = None
+    purchased_side: str | None = None
+
     count_fp: str | None = None
     yes_price_dollars: str | None = None
-    no_price_dollars: str | None = None
+    fee_cost: str | None = None
+    post_position_fp: str | None = None
     is_taker: bool | None = None
+    client_order_id: str | None = None
+    subaccount: int | None = None
+    ts_ms: int | None = None
     ts: TsField = None
 
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    @property
+    def ticker(self) -> str | None:
+        """Backwards-compatible alias for :attr:`market_ticker`."""
+        return self.market_ticker
+
+    @model_validator(mode="after")
+    def _canonical_direction(self):
+        if self.book_side is None and self.outcome_side:
+            object.__setattr__(
+                self, "book_side", "bid" if self.outcome_side == "yes" else "ask")
+        # Fill mapping: `side` is the outcome acquired. `action` is ignored on
+        # purpose -- including it inverts the sell rows.
+        if self.book_side is None and self.side:
+            object.__setattr__(
+                self, "book_side", "bid" if self.side == "yes" else "ask")
+        if self.outcome_side is None and self.book_side:
+            object.__setattr__(
+                self, "outcome_side", "yes" if self.book_side == "bid" else "no")
+        return self
+
+
+class UserOrderMessage(BaseModel):
+    """Resting-order lifecycle update (private ``user_orders`` channel).
+
+    Note this channel uses ``ticker``, not ``market_ticker``, and carries no
+    ``action`` -- branch on :attr:`book_side`.
+    """
+
+    order_id: str | None = None
+    user_id: str | None = None
+    ticker: str | None = Field(
+        default=None, validation_alias=AliasChoices("ticker", "market_ticker"),
+    )
+    status: str | None = None
+
+    book_side: str | None = None
+    outcome_side: str | None = None
+    side: str | None = None      # deprecated
+    is_yes: bool | None = None   # deprecated
+
+    yes_price_dollars: str | None = None
+    fill_count_fp: str | None = None
+    remaining_count_fp: str | None = None
+    initial_count_fp: str | None = None
+    taker_fill_cost_dollars: str | None = None
+    maker_fill_cost_dollars: str | None = None
+    taker_fees_dollars: str | None = None
+    maker_fees_dollars: str | None = None
+    client_order_id: str | None = None
+    order_group_id: str | None = None
+    self_trade_prevention_type: str | None = None
+    created_ts_ms: int | None = None
+    last_updated_ts_ms: int | None = None
+    expiration_ts_ms: int | None = None
+    created_time: str | None = None      # deprecated
+    last_update_time: str | None = None  # deprecated
+    expiration_time: str | None = None   # deprecated
+    subaccount_number: int | None = None
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    @model_validator(mode="after")
+    def _canonical_direction(self):
+        if self.book_side is None and self.outcome_side:
+            object.__setattr__(
+                self, "book_side", "bid" if self.outcome_side == "yes" else "ask")
+        if self.book_side is None and self.is_yes is not None:
+            object.__setattr__(self, "book_side", "bid" if self.is_yes else "ask")
+        if self.outcome_side is None and self.book_side:
+            object.__setattr__(
+                self, "outcome_side", "yes" if self.book_side == "bid" else "no")
+        return self
 
 
 class PositionMessage(BaseModel):
@@ -152,43 +304,92 @@ class PositionMessage(BaseModel):
     """
 
 
-    ticker: str
+    # Wire sends `market_ticker`. This was declared as a REQUIRED `ticker`,
+    # so every frame failed validation and silently degraded to a raw dict.
+    market_ticker: str | None = Field(
+        default=None, validation_alias=AliasChoices("market_ticker", "ticker"),
+    )
+    user_id: str | None = None
     position_fp: str | None = None
-    market_exposure_dollars: str | None = None
+    position_cost_dollars: str | None = None
+    position_fee_cost_dollars: str | None = None
     realized_pnl_dollars: str | None = None
-    total_traded_dollars: str | None = None
-    resting_orders_count: int | None = None
     fees_paid_dollars: str | None = None
-    ts: TsField = None
+    volume_fp: str | None = None
+    subaccount: int | None = None
 
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    @property
+    def ticker(self) -> str | None:
+        """Backwards-compatible alias for :attr:`market_ticker`."""
+        return self.market_ticker
 
 
 class MarketLifecycleMessage(BaseModel):
     """Market lifecycle state change (public channel)."""
 
     market_ticker: str
-    status: str | None = None
+    # Wire sends `event_type`; the model declared `status`, always None.
+    event_type: str | None = Field(
+        default=None, validation_alias=AliasChoices("event_type", "status"),
+    )
     result: str | None = None  # Settlement result ("yes" or "no")
-    ts: TsField = None
+    open_ts: int | None = None
+    close_ts: int | None = None
+    determination_ts: int | None = None
+    settled_ts: int | None = None
+    settlement_value: str | None = None
+    is_deactivated: bool | None = None
+    price_level_structure: str | None = None
+    price_ranges: list[dict] | None = None
+    event_ticker: str | None = None
 
-    model_config = ConfigDict(extra="ignore")
+    # Emitted on `metadata_updated` events (and `additional_metadata` on
+    # `created`). Previously unmodelled, so extra="ignore" silently dropped the
+    # entire payload of a metadata_updated frame -- the message arrived with
+    # nothing on it but the ticker and event_type.
+    #
+    # strike_type governs how the strikes are read: "between" uses both,
+    # "greater" floor only, "less" cap only.
+    strike_type: str | None = None
+    floor_strike: float | None = None
+    cap_strike: float | None = None
+    custom_strike: dict | None = None
+    yes_sub_title: str | None = None
+    additional_metadata: dict | None = None
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
 
 class OrderGroupUpdateMessage(BaseModel):
     """Order group lifecycle update (private channel)."""
 
     order_group_id: str
-    status: str | None = None  # "active", "triggered", "canceled"
-    ts: TsField = None
+    # Wire sends `event_type`; the model declared `status`, always None.
+    event_type: str | None = Field(
+        default=None, validation_alias=AliasChoices("event_type", "status"),
+    )
+    contracts_limit_fp: str | None = None
+    ts_ms: int | None = None
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+
+OrderbookMessage = Union[OrderbookSnapshotMessage, OrderbookDeltaMessage]
+
+
+class ErrorMessage(BaseModel):
+    """Server-side error frame. Previously swallowed with no log line."""
+
+    code: int | None = None
+    msg: str | None = None
+    market_ticker: str | None = None
+    market_id: str | None = None
 
     model_config = ConfigDict(extra="ignore")
 
 
-# Type alias for orderbook messages (handlers receive either type)
-OrderbookMessage = Union[OrderbookSnapshotMessage, OrderbookDeltaMessage]
-
-# Maps message "type" field to model class
 _MESSAGE_MODELS: dict[str, type[BaseModel]] = {
     "ticker": TickerMessage,
     "orderbook_snapshot": OrderbookSnapshotMessage,
@@ -197,7 +398,11 @@ _MESSAGE_MODELS: dict[str, type[BaseModel]] = {
     "fill": FillMessage,
     "market_position": PositionMessage,
     "market_lifecycle_v2": MarketLifecycleMessage,
-    "order_group_update": OrderGroupUpdateMessage,
+    # Wire type is plural. The old singular key never matched, so these frames
+    # fell through to a raw dict.
+    "order_group_updates": OrderGroupUpdateMessage,
+    "user_order": UserOrderMessage,
+    "error": ErrorMessage,
 }
 
 # Maps message types to channel name for handler lookup
@@ -209,7 +414,10 @@ _TYPE_TO_CHANNEL: dict[str, str] = {
     "fill": "fill",
     "market_position": "market_positions",
     "market_lifecycle_v2": "market_lifecycle_v2",
-    "order_group_update": "order_group_updates",
+    "order_group_updates": "order_group_updates",
+    # Subscribers use the channel name `user_orders`; the frames say
+    # `user_order`. Map it so feed.on("user_orders") actually fires.
+    "user_order": "user_orders",
 }
 
 
@@ -238,6 +446,12 @@ def _parse_message(raw: str | bytes) -> tuple[str | None, str | None, Any, dict]
         try:
             parsed = model_cls.model_validate(payload)
         except Exception:
+            # Degrading to a raw dict silently is how wire/model drift stays
+            # invisible -- handlers typed for a model start seeing dicts.
+            logger.warning(
+                "Failed to validate %s payload against %s; passing raw dict",
+                msg_type, model_cls.__name__, exc_info=True,
+            )
             parsed = payload
     else:
         parsed = payload

@@ -2,13 +2,62 @@ from enum import Enum
 
 
 class Side(str, Enum):
+    """Legacy outcome side on Order/Fill.
+
+    .. deprecated::
+        Kalshi deprecated ``side`` on Order and Fill responses; see
+        https://docs.kalshi.com/getting_started/order_direction. Read
+        :class:`BookSide` instead. Still used as an *input* to
+        ``place_order`` and as a live field on orderbook deltas and
+        multivariate legs, so the enum itself is not going away.
+    """
+
     YES = "yes"
     NO = "no"
 
 
 class Action(str, Enum):
+    """Legacy action on Order/Fill.
+
+    .. deprecated::
+        Deprecated alongside :class:`Side` on responses. Still an input to
+        ``place_order``.
+    """
+
     BUY = "buy"
     SELL = "sell"
+
+
+class BookSide(str, Enum):
+    """Side of the single YES-denominated book. The canonical direction field.
+
+    ``bid`` is long yes, ``ask`` is long no. Present on Order, Fill and
+    (as ``taker_book_side``) Trade, on both REST and WebSocket.
+
+    Prefer this over :class:`Side`/:class:`Action` for every direction
+    decision. It is the only direction field that means the same thing on
+    orders and on fills -- the legacy ``side`` does not (see
+    :class:`OutcomeSide`).
+    """
+
+    BID = "bid"
+    ASK = "ask"
+
+
+class OutcomeSide(str, Enum):
+    """Which outcome the holder is long. Canonical, equivalent to :class:`BookSide`.
+
+    ``yes`` is exactly ``BookSide.BID``; ``no`` is exactly ``BookSide.ASK``.
+
+    A caveat worth knowing: on *orders* ``outcome_side`` is derived from the
+    legacy ``(action, side)`` pair, so a ``sell``/``yes`` order reports
+    ``outcome_side="no"``. On *fills* it equals the legacy ``side``. The two
+    surfaces therefore disagree about what legacy ``side`` means, which is why
+    :class:`BookSide` -- identical on both -- is the safer thing to branch on.
+    """
+
+    YES = "yes"
+    NO = "no"
 
 
 class OrderType(str, Enum):

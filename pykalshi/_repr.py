@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     from .events import Event
     from .models import (
         BalanceModel, PositionModel, FillModel, OrderbookResponse,
-        SettlementModel, TradeModel, ExchangeStatus, Announcement,
+        SettlementModel, TradeModel, ExchangeStatus,
         APILimits, APIKey, QueuePositionModel, OrderGroupModel,
     )
 
@@ -126,7 +126,18 @@ def _status_pill(status: str | None) -> str:
     return f'<span class="pill pill-gray">{safe_status}</span>'
 
 
-def _side_pill(action: str | None, side: str | None) -> str:
+def _direction_pill(book_side: str | None, action: str | None = None,
+                    side: str | None = None) -> str:
+    """Render direction, preferring the canonical book_side.
+
+    Falls back to the deprecated action/side pair only when book_side is
+    absent, so the direction does not silently become an em-dash once Kalshi
+    stops sending the legacy fields.
+    """
+    if book_side:
+        b = book_side.lower()
+        cls = "pill-green" if b == "bid" else "pill-red"
+        return f'<span class="pill {cls}">{escape(book_side.upper())}</span>'
     parts = []
     if action:
         cls = "pill-green" if action.lower() == "buy" else "pill-red"
@@ -134,6 +145,11 @@ def _side_pill(action: str | None, side: str | None) -> str:
     if side:
         parts.append(f'<span class="pill pill-gray">{escape(side.upper())}</span>')
     return " ".join(parts) if parts else "—"
+
+
+# Backwards-compatible alias.
+def _side_pill(action: str | None, side: str | None) -> str:
+    return _direction_pill(None, action, side)
 
 
 def _result_pill(result: str | None) -> str:
@@ -273,6 +289,7 @@ def order_html(o: Order) -> str:
     status = o.status.value if o.status else None
     action = o.action.value if o.action else None
     side = o.side.value if o.side else None
+    book_side = o.book_side.value if getattr(o, "book_side", None) else None
 
     filled = Decimal(o.fill_count_fp or "0")
     total = Decimal(o.initial_count_fp or "0")
@@ -288,7 +305,7 @@ def order_html(o: Order) -> str:
     rows = [
         _row("Order ID", _mono_id(o.order_id)),
         _row("Ticker", _ticker_link(o.ticker)),
-        _row("Side", _side_pill(action, side)),
+        _row("Side", _direction_pill(book_side, action, side)),
         _row("Price", _dollars(price)),
         _row("Filled", fill_str),
         _row("Status", _status_pill(status)),
@@ -357,7 +374,8 @@ def fill_html(f: FillModel) -> str:
     rows = [
         _row("Trade ID", _mono_id(f.trade_id)),
         _row("Ticker", _ticker_link(f.ticker)),
-        _row("Side", _side_pill(action, side)),
+        _row("Side", _direction_pill(
+            f.book_side.value if getattr(f, "book_side", None) else None, action, side)),
         _row("Count", _fp(f.count_fp)),
         _row("Price", _dollars(f.yes_price_dollars)),
         _row("Role", role),
@@ -441,7 +459,8 @@ def settlement_html(s: SettlementModel) -> str:
 
 
 def trade_html(t: TradeModel) -> str:
-    taker = t.taker_side.upper() if t.taker_side else None
+    _t = getattr(t, "taker_outcome_side", None) or t.taker_side
+    taker = (_t.value if hasattr(_t, "value") else _t).upper() if _t else None
     taker_cls = "pill-green" if taker == "YES" else "pill-red" if taker == "NO" else "pill-gray"
     taker_str = f'<span class="pill {taker_cls}">{taker}</span>' if taker else "—"
 
@@ -467,24 +486,6 @@ def exchange_status_html(e: ExchangeStatus) -> str:
         _row("Exchange", exchange_pill),
         _row("Trading", trading_pill),
     ]
-    return _wrap(f"<table>{''.join(rows)}</table>")
-
-
-def announcement_html(a: Announcement) -> str:
-    rows = [
-        _row("Title", f"<strong>{escape(a.title)}</strong>"),
-    ]
-
-    if a.body:
-        body = a.body[:200] + "..." if len(a.body) > 200 else a.body
-        rows.append(_row("Body", f'<span class="d">{escape(body)}</span>'))
-
-    if a.type:
-        rows.append(_row("Type", f'<span class="pill pill-gray">{escape(a.type)}</span>'))
-
-    if a.delivery_time:
-        rows.append(_row("Time", _format_time(a.delivery_time)))
-
     return _wrap(f"<table>{''.join(rows)}</table>")
 
 

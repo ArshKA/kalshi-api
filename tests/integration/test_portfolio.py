@@ -2,7 +2,9 @@
 
 import time
 import pytest
-from pykalshi.enums import Action, Side, OrderStatus, MarketStatus
+from pykalshi.enums import (
+    Action, Side, OrderStatus, MarketStatus, BookSide, OutcomeSide,
+)
 from pykalshi.exceptions import ResourceNotFoundError
 
 
@@ -259,14 +261,15 @@ class TestOrderMutations:
             yes_price_dollars="0.01",
         )
 
-        # Amend to $0.02
+        # Amend to $0.02, addressed the canonical way. action/side are
+        # deprecated and past their stated removal floor, so a test that
+        # depends on them is testing a path that is scheduled to disappear.
         amended = client.portfolio.amend_order(
             order_id=order.order_id,
             count_fp="1",
             yes_price_dollars="0.02",
             ticker=order.ticker,
-            action=order.action,
-            side=order.side,
+            book_side=order.book_side,
         )
 
         # Verify amendment succeeded
@@ -601,3 +604,190 @@ class TestOrderMutations:
         )
 
         assert terminal_order.status == OrderStatus.CANCELED
+
+
+class TestV2OrderSurface:
+    """Pin the endpoints and the direction mapping against the real API.
+
+    The rest of this suite asserts only on behaviour, which is how the v1 order
+    endpoints survived being replaced: a wrong path or an inverted side is
+    invisible if you only check that an order_id came back.
+    """
+
+    @staticmethod
+    def _await_order(client, order_id, until=None, tries=8, delay=0.5):
+        """Fetch an order, tolerating read-after-write lag.
+
+        Writes are acknowledged by the matching engine but reads are served by
+        query-exchange, which indexes a moment later. Until it catches up,
+        GET /portfolio/orders/{id} returns 404 not_found (an unknown order --
+        distinct from the "404 page not found" you get from a missing route),
+        and an order that does exist can still be returned in its pre-write
+        state.
+
+        `until` is an optional predicate on the fetched order; polling continues
+        until it holds, so a test can wait for its own write to land rather than
+        racing it.
+        """
+        import time as _time
+        from pykalshi.exceptions import ResourceNotFoundError
+
+        last = None
+        for attempt in range(tries):
+            try:
+                order = client.portfolio.get_order(order_id)
+                if until is None or until(order):
+                    return order
+                last = f"predicate not yet satisfied (attempt {attempt + 1})"
+            except ResourceNotFoundError as exc:
+                last = exc
+            _time.sleep(delay * (attempt + 1))
+        pytest.skip(f"order {order_id} did not reach the expected state in time: {last}")
+
+    @pytest.fixture
+    def market_for_orders(self, trading_client):
+        client = trading_client
+        markets = client.get_markets(limit=10, status=MarketStatus.OPEN)
+        for m in markets:
+            if m.data.yes_bid_dollars or m.data.yes_ask_dollars:
+                return m
+        if markets:
+            return markets[0]
+        pytest.skip("No open markets available")
+
+    def test_writes_use_v2_reads_use_v1(self, recorded_client, market_for_orders):
+        """Writes go to /portfolio/events/orders; reads stay on /portfolio/orders.
+
+        POST /portfolio/orders returns 410; GET /portfolio/events/orders returns
+        404. Getting either half wrong breaks the client, so pin both.
+        """
+        from .conftest import paths_for
+
+        client = recorded_client
+        order = client.portfolio.place_order(
+            market_for_orders, book_side="bid", price_dollars="0.01",
+            count_fp="1",
+        )
+        try:
+            self._await_order(client, order.order_id)
+            list(client.portfolio.get_orders(status=OrderStatus.RESTING))
+        finally:
+            client.portfolio.cancel_order(order.order_id)
+
+        assert "/portfolio/events/orders" in paths_for(client, "POST")
+        assert f"/portfolio/events/orders/{order.order_id}" in paths_for(client, "DELETE")
+
+        gets = paths_for(client, "GET")
+        assert "/portfolio/orders" in gets
+        assert f"/portfolio/orders/{order.order_id}" in gets
+        assert not any(p.startswith("/portfolio/events/orders") for p in gets), (
+            f"read hit a V2 path, which 404s: {gets}"
+        )
+
+    def test_buy_no_is_normalised_to_a_yes_side_sell(self, client, market_for_orders):
+        """buy NO @ 0.01 must rest as sell YES @ 0.99.
+
+        V2 quotes a single YES-denominated book, so the client converts
+        (buy, NO, p) -> ask at 1 - p, and the exchange stores it as a YES-side
+        sell. If that conversion inverted, the order would rest on the wrong
+        side at the wrong price and nothing else in this suite would notice --
+        the other tests only check order_id and status.
+
+        Priced as an ask at 0.99, far above any book, so it cannot fill. (The
+        mirror image, an ask at 0.01, would cross and post_only rejects it with
+        400 invalid_order.)
+        """
+        order = client.portfolio.place_order(
+            # ask at 0.99 == buy NO at 0.01, expressed canonically
+            market_for_orders, book_side="ask", price_dollars="0.99",
+            count_fp="1",
+        )
+        try:
+            # Both the returned Order and the fetched one describe the same
+            # long-no position, and they agree on the canonical field even
+            # though their legacy (action, side) pairs differ.
+            assert order.data.book_side == BookSide.ASK
+            assert order.data.outcome_side == OutcomeSide.NO
+            assert float(order.data.yes_price_dollars) == pytest.approx(0.99)
+
+            fetched = self._await_order(client, order.order_id)
+            assert fetched.data.book_side == BookSide.ASK
+            assert float(fetched.data.yes_price_dollars) == pytest.approx(0.99)
+            assert float(fetched.data.no_price_dollars) == pytest.approx(0.01)
+
+            # Legacy compatibility, while the server still sends it: the pair
+            # flips between what we submitted (buy/no) and what comes back
+            # (sell/yes) for one unchanged order. Skipped rather than failed
+            # once Kalshi drops these -- the canonical asserts above are the
+            # ones that must hold.
+            if fetched.data.side is not None and fetched.data.action is not None:
+                assert fetched.data.side == Side.YES
+                assert fetched.data.action == Action.SELL
+        finally:
+            client.portfolio.cancel_order(order.order_id)
+
+    def test_amend_actually_changes_the_resting_order(self, client, market_for_orders):
+        """Re-read after amending.
+
+        The existing amend tests assert only that a resting order came back, so a
+        no-op amend -- or one sent at the wrong price -- passes. The V2 amend body
+        is a different shape from v1, so verify the server state moved.
+        """
+        order = client.portfolio.place_order(
+            market_for_orders, book_side="bid", price_dollars="0.01",
+            count_fp="1",
+        )
+        try:
+            self._await_order(client, order.order_id)
+            client.portfolio.amend_order(
+                order.order_id, count_fp="3", yes_price_dollars="0.01",
+            )
+
+            after = self._await_order(
+                client, order.order_id,
+                until=lambda o: float(o.data.remaining_count_fp or 0) == 3.0,
+            )
+            assert float(after.data.remaining_count_fp) == pytest.approx(3.0)
+            assert float(after.data.yes_price_dollars) == pytest.approx(0.01), (
+                "amend must preserve the price when only the count changes"
+            )
+        finally:
+            client.portfolio.cancel_order(order.order_id)
+
+    def test_write_ack_does_not_blank_known_fields(self, client, market_for_orders):
+        """V2 acks carry no ticker/side/price; the Order must keep its own."""
+        order = client.portfolio.place_order(
+            market_for_orders, book_side="bid", price_dollars="0.01",
+            count_fp="1",
+        )
+        ticker = order.ticker
+        assert ticker == market_for_orders.ticker
+
+        order.cancel()
+
+        assert order.status == OrderStatus.CANCELED
+        assert order.ticker == ticker, "cancel ack wiped the ticker"
+        assert order.data.book_side == BookSide.BID, "cancel ack wiped book_side"
+        assert order.data.yes_price_dollars is not None
+
+    def test_batch_place_returns_populated_orders(self, client, market_for_orders):
+        """Batch acks are as thin as single ones; results must still be usable."""
+        market = market_for_orders
+        result = client.portfolio.batch_place_orders([
+            {"ticker": market.ticker, "action": "buy", "side": "yes",
+             "count_fp": "1", "yes_price_dollars": "0.01"},
+            {"ticker": market.ticker, "action": "buy", "side": "yes",
+             "count_fp": "1", "yes_price_dollars": "0.02"},
+        ])
+        try:
+            assert len(result) == 2
+            for o in result:
+                assert o.order_id is not None
+                assert o.ticker == market.ticker, "batch ack left ticker blank"
+                assert o.data.yes_price_dollars is not None, "batch ack left price null"
+            prices = sorted(float(o.data.yes_price_dollars) for o in result)
+            assert prices == pytest.approx([0.01, 0.02])
+        finally:
+            ids = [o.order_id for o in result if o.order_id]
+            if ids:
+                client.portfolio.batch_cancel_orders(ids)

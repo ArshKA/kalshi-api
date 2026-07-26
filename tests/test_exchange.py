@@ -1,4 +1,4 @@
-"""Tests for Exchange status, schedule, and announcements."""
+"""Tests for Exchange status and schedule."""
 
 import pytest
 from unittest.mock import ANY
@@ -88,47 +88,6 @@ class TestExchangeSchedule:
         schedule = client.exchange.get_schedule()
 
         assert schedule == {}
-
-
-class TestExchangeAnnouncements:
-    """Tests for exchange announcements."""
-
-    def test_get_announcements(self, client, mock_response):
-        """Test fetching exchange announcements."""
-        client._session.request.return_value = mock_response({
-            "announcements": [
-                {
-                    "id": "ann-001",
-                    "title": "Market Hours Update",
-                    "body": "Extended hours starting next week.",
-                    "type": "info",
-                    "created_time": "2024-01-01T12:00:00Z",
-                },
-                {
-                    "id": "ann-002",
-                    "title": "New Markets Available",
-                    "body": "Sports markets now live.",
-                    "type": "feature",
-                    "created_time": "2024-01-02T10:00:00Z",
-                },
-            ]
-        })
-
-        announcements = client.exchange.get_announcements()
-
-        assert len(announcements) == 2
-        assert announcements[0].id == "ann-001"
-        assert announcements[0].title == "Market Hours Update"
-        assert announcements[0].body == "Extended hours starting next week."
-        assert announcements[1].title == "New Markets Available"
-
-    def test_get_announcements_empty(self, client, mock_response):
-        """Test empty announcements response."""
-        client._session.request.return_value = mock_response({"announcements": []})
-
-        announcements = client.exchange.get_announcements()
-
-        assert announcements == []
 
 
 class TestUserDataTimestamp:

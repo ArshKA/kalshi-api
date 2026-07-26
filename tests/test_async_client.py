@@ -183,12 +183,11 @@ class TestAsyncPortfolio:
 
     @pytest.mark.asyncio
     async def test_cancel_order(self, async_client):
+        # CancelOrderV2Response is a thin ack.
         async_client._session.request.return_value = _mock_response({
-            "order": {
-                "order_id": "abc-123",
-                "ticker": "KXTEST",
-                "status": "canceled",
-            }
+            "order_id": "abc-123",
+            "reduced_by": "10.00",
+            "ts_ms": 1715793660456,
         })
 
         order = await async_client.portfolio.cancel_order("abc-123")

@@ -2,6 +2,7 @@
 
 from decimal import Decimal
 
+import json
 import pytest
 from unittest.mock import ANY
 from pykalshi.enums import Action, Side, OrderStatus, PositionCountFilter
@@ -177,7 +178,7 @@ def test_get_order_by_id(client, mock_response):
     # Verify correct endpoint called
     client._session.request.assert_called_with(
         "GET",
-        "https://external-api.demo.kalshi.co/trade-api/v2/portfolio/events/orders/order-abc-123",
+        "https://external-api.demo.kalshi.co/trade-api/v2/portfolio/orders/order-abc-123",
         headers=ANY,
         timeout=ANY,
     )
@@ -197,18 +198,13 @@ def test_get_order_not_found(client, mock_response):
 
 def test_cancel_order(client, mock_response):
     """Test canceling an order by ID."""
+    # CancelOrderV2Response: a thin ack, not a full order object.
     client._session.request.return_value = mock_response(
         {
-            "order": {
-                "order_id": "order-abc-123",
-                "ticker": "KXTEST",
-                "action": "buy",
-                "side": "yes",
-                "initial_count_fp": "10.00",
-                "yes_price_dollars": "0.55",
-                "status": "canceled",
-                "type": "limit",
-            }
+            "order_id": "order-abc-123",
+            "client_order_id": "client-abc-123",
+            "reduced_by": "10.00",
+            "ts_ms": 1715793660456,
         }
     )
 
@@ -216,6 +212,7 @@ def test_cancel_order(client, mock_response):
 
     assert order.order_id == "order-abc-123"
     assert order.status == OrderStatus.CANCELED
+    assert order.data.client_order_id == "client-abc-123"
 
     # Verify DELETE request
     client._session.request.assert_called_with(
@@ -241,13 +238,7 @@ def test_order_cancel_delegates_to_portfolio(client, mock_response):
 
     # Mock the cancel response
     client._session.request.return_value = mock_response(
-        {
-            "order": {
-                "order_id": "order-abc-123",
-                "ticker": "KXTEST",
-                "status": "canceled",
-            }
-        }
+        {"order_id": "order-abc-123", "reduced_by": "10.00", "ts_ms": 1715793660456}
     )
 
     result = order.cancel()
@@ -267,30 +258,41 @@ def test_order_amend(client, mock_response):
         order_id="order-abc-123",
         ticker="KXTEST",
         status=OrderStatus.RESTING,
+        action=Action.BUY,
+        side=Side.YES,
         yes_price_dollars="0.50",
+        remaining_count_fp="10.00",
     )
     order = Order(client, initial_model)
 
+    # AmendOrderV2Response is a thin ack.
     client._session.request.return_value = mock_response(
         {
-            "order": {
-                "order_id": "order-abc-123",
-                "ticker": "KXTEST",
-                "status": "resting",
-                "yes_price_dollars": "0.55",
-            }
+            "order_id": "order-abc-123",
+            "remaining_count": "10.00",
+            "fill_count": "0.00",
+            "ts_ms": 1715793690123,
         }
     )
 
     result = order.amend(yes_price_dollars="0.55")
 
     assert result is order
-    assert order.yes_price_dollars == "0.55"
+    assert order.yes_price_dollars == "0.5500"
 
     # Verify POST to amend endpoint
     call_args = client._session.request.call_args
     assert call_args.args[0] == "POST"
     assert "/portfolio/events/orders/order-abc-123/amend" in call_args.args[1]
+
+    # AmendOrderV2Request: ticker, side (bid/ask), price, count -- all required.
+    body = json.loads(call_args.kwargs["content"])
+    assert body == {
+        "ticker": "KXTEST",
+        "side": "bid",
+        "price": "0.5500",
+        "count": "10.00",
+    }
 
 
 def test_order_decrease(client, mock_response):
@@ -306,14 +308,12 @@ def test_order_decrease(client, mock_response):
     )
     order = Order(client, initial_model)
 
+    # DecreaseOrderV2Response is a thin ack.
     client._session.request.return_value = mock_response(
         {
-            "order": {
-                "order_id": "order-abc-123",
-                "ticker": "KXTEST",
-                "status": "resting",
-                "remaining_count_fp": "7.00",
-            }
+            "order_id": "order-abc-123",
+            "remaining_count": "7.00",
+            "ts_ms": 1715793690123,
         }
     )
 
@@ -326,6 +326,8 @@ def test_order_decrease(client, mock_response):
     call_args = client._session.request.call_args
     assert call_args.args[0] == "POST"
     assert "/portfolio/events/orders/order-abc-123/decrease" in call_args.args[1]
+    # DecreaseOrderV2Request uses reduce_by, not the v1 reduce_by_fp.
+    assert json.loads(call_args.kwargs["content"]) == {"reduce_by": "3.00"}
 
 
 def test_order_refresh(client, mock_response):
@@ -361,7 +363,7 @@ def test_order_refresh(client, mock_response):
     # Verify GET to order endpoint
     client._session.request.assert_called_with(
         "GET",
-        "https://external-api.demo.kalshi.co/trade-api/v2/portfolio/events/orders/order-abc-123",
+        "https://external-api.demo.kalshi.co/trade-api/v2/portfolio/orders/order-abc-123",
         headers=ANY,
         timeout=ANY,
     )
@@ -534,3 +536,229 @@ class TestValidateFractional:
     def test_fractional_count_fractional_enabled(self):
         self._validate("10.50", fractional_enabled=True)
         self._validate("0.01", fractional_enabled=True)
+
+
+# ---------------------------------------------------------------------------
+# V2 order surface
+#
+# Kalshi deprecated the v1 order WRITE endpoints (POST /portfolio/orders now
+# returns 410 deprecated_v1_order_endpoint) but kept the READ endpoints where
+# they were. These tests pin both halves of that split, and pin the V2
+# request/response shapes so a mock can't drift back to the v1 contract.
+# ---------------------------------------------------------------------------
+
+def _create_ack(order_id="order-abc-123", remaining="10.00", fill="0.00"):
+    """CreateOrderV2Response -- a thin ack, not a full order object."""
+    return {
+        "order_id": order_id,
+        "client_order_id": "client-abc-123",
+        "fill_count": fill,
+        "remaining_count": remaining,
+        "ts_ms": 1715793600123,
+    }
+
+
+def test_place_order_sends_v2_request_shape(client, mock_response):
+    """Buying YES maps to a bid at the YES price."""
+    client._session.request.return_value = mock_response(_create_ack())
+
+    client.portfolio.place_order(
+        "KXTEST", Action.BUY, Side.YES, count_fp="10.00",
+        yes_price_dollars="0.55", post_only=True,
+    )
+
+    call_args = client._session.request.call_args
+    assert call_args.args[0] == "POST"
+    assert call_args.args[1].endswith("/portfolio/events/orders")
+
+    body = json.loads(call_args.kwargs["content"])
+    # V2 is a single YES-denominated book: side is bid/ask, price is `price`,
+    # count is `count`. None of the v1 keys should survive.
+    assert body["ticker"] == "KXTEST"
+    assert body["side"] == "bid"
+    assert body["price"] == "0.5500"
+    assert body["count"] == "10.00"
+    assert body["post_only"] is True
+    for stale in ("action", "count_fp", "yes_price_dollars", "no_price_dollars", "type"):
+        assert stale not in body
+
+
+def test_place_order_buy_no_maps_to_ask_at_yes_price(client, mock_response):
+    """Buying NO at 0.83 is selling YES at 0.17 -- an ask, YES-denominated."""
+    client._session.request.return_value = mock_response(_create_ack())
+
+    client.portfolio.place_order(
+        "KXTEST", Action.BUY, Side.NO, count_fp="10.00", no_price_dollars="0.83",
+    )
+
+    body = json.loads(client._session.request.call_args.kwargs["content"])
+    assert body["side"] == "ask"
+    assert body["price"] == "0.1700"
+
+
+def test_place_order_parses_v2_ack(client, mock_response):
+    """The thin ack still yields a usable Order without an extra round-trip."""
+    client._session.request.return_value = mock_response(_create_ack())
+
+    order = client.portfolio.place_order(
+        "KXTEST", Action.BUY, Side.YES, count_fp="10.00", yes_price_dollars="0.55",
+    )
+
+    assert order.order_id == "order-abc-123"
+    assert order.ticker == "KXTEST"
+    assert order.status == OrderStatus.RESTING
+    assert order.remaining_count_fp == "10.00"
+    assert order.fill_count_fp == "0.00"
+    assert order.data.yes_price_dollars == "0.5500"
+    assert client._session.request.call_count == 1
+
+
+def test_place_order_fully_filled_ack_is_executed(client, mock_response):
+    client._session.request.return_value = mock_response(
+        _create_ack(remaining="0.00", fill="10.00")
+    )
+
+    order = client.portfolio.place_order(
+        "KXTEST", Action.BUY, Side.YES, count_fp="10.00", yes_price_dollars="0.55",
+    )
+
+    assert order.status == OrderStatus.EXECUTED
+
+
+def test_get_orders_uses_v1_read_path(client, mock_response):
+    """Listing orders was NOT migrated; /portfolio/events/orders 404s."""
+    client._session.request.return_value = mock_response({"orders": [], "cursor": ""})
+
+    list(client.portfolio.get_orders(status=OrderStatus.RESTING))
+
+    call_url = client._session.request.call_args.args[1]
+    assert "/portfolio/orders" in call_url
+    assert "/portfolio/events/orders" not in call_url
+
+
+def test_queue_position_uses_v1_read_path(client, mock_response):
+    client._session.request.return_value = mock_response(
+        {"queue_position": 3, "order_id": "order-abc-123"}
+    )
+
+    client.portfolio.get_queue_position("order-abc-123")
+
+    call_url = client._session.request.call_args.args[1]
+    assert call_url.endswith("/portfolio/orders/order-abc-123/queue_position")
+
+
+def test_batch_place_orders_converts_to_v2_items(client, mock_response):
+    client._session.request.return_value = mock_response(
+        {"orders": [_create_ack("o1"), _create_ack("o2")]}
+    )
+
+    orders = client.portfolio.batch_place_orders([
+        {"ticker": "KXTEST", "action": "buy", "side": "yes",
+         "count_fp": "10.00", "yes_price_dollars": "0.45"},
+        {"ticker": "KXTEST", "action": "buy", "side": "no",
+         "count_fp": "5.00", "no_price_dollars": "0.45"},
+    ])
+
+    body = json.loads(client._session.request.call_args.kwargs["content"])
+    # time_in_force and self_trade_prevention_type are required by
+    # BatchCreateOrdersV2Request, so they are filled in when not supplied.
+    assert body["orders"][0] == {
+        "ticker": "KXTEST", "side": "bid", "count": "10.00", "price": "0.4500",
+        "time_in_force": "good_till_canceled",
+        "self_trade_prevention_type": "maker",
+    }
+    assert body["orders"][1] == {
+        "ticker": "KXTEST", "side": "ask", "count": "5.00", "price": "0.5500",
+        "time_in_force": "good_till_canceled",
+        "self_trade_prevention_type": "maker",
+    }
+    assert [o.order_id for o in orders] == ["o1", "o2"]
+    # Batch acks carry no ticker/price either, so the request context must be
+    # folded back in -- otherwise callers get blank tickers and null prices.
+    assert [o.ticker for o in orders] == ["KXTEST", "KXTEST"]
+    assert orders[0].data.yes_price_dollars == "0.4500"
+    assert orders[1].data.yes_price_dollars == "0.5500"
+    assert orders[0].data.side == Side.YES
+    assert orders[1].data.side == Side.NO
+
+
+def test_batch_place_orders_matches_acks_by_client_order_id(client, mock_response):
+    """Acks returned out of order must still line up with their requests."""
+    client._session.request.return_value = mock_response({"orders": [
+        {"order_id": "o2", "client_order_id": "c2", "remaining_count": "5.00", "ts_ms": 2},
+        {"order_id": "o1", "client_order_id": "c1", "remaining_count": "10.00", "ts_ms": 1},
+    ]})
+
+    orders = client.portfolio.batch_place_orders([
+        {"ticker": "KXAAA", "action": "buy", "side": "yes", "count_fp": "10.00",
+         "yes_price_dollars": "0.45", "client_order_id": "c1"},
+        {"ticker": "KXBBB", "action": "buy", "side": "yes", "count_fp": "5.00",
+         "yes_price_dollars": "0.60", "client_order_id": "c2"},
+    ])
+
+    got = {o.order_id: (o.ticker, o.data.yes_price_dollars) for o in orders}
+    assert got == {"o2": ("KXBBB", "0.6000"), "o1": ("KXAAA", "0.4500")}
+
+
+def test_batch_cancel_orders_parses_ack_items(client, mock_response):
+    client._session.request.return_value = mock_response(
+        {"orders": [
+            {"order_id": "o1", "reduced_by": "10.00", "ts_ms": 1},
+            {"order_id": "o2", "reduced_by": "5.00", "ts_ms": 2},
+        ]}
+    )
+
+    orders = client.portfolio.batch_cancel_orders(["o1", "o2"])
+
+    assert [o.order_id for o in orders] == ["o1", "o2"]
+    call_args = client._session.request.call_args
+    assert call_args.args[0] == "DELETE"
+    assert call_args.args[1].endswith("/portfolio/events/orders/batched")
+
+
+def test_place_order_always_sends_required_v2_fields(client, mock_response):
+    """time_in_force and self_trade_prevention_type are required by
+    CreateOrderV2Request. Omitting them yields 400 missing_parameters, so they
+    must be sent even when the caller passes nothing (or explicitly None)."""
+    client._session.request.return_value = mock_response(_create_ack())
+
+    client.portfolio.place_order(
+        "KXTEST", Action.BUY, Side.YES, count_fp="1.00",
+        yes_price_dollars="0.01", time_in_force=None, self_trade_prevention=None,
+    )
+
+    body = json.loads(client._session.request.call_args.kwargs["content"])
+    assert body["time_in_force"] == "good_till_canceled"
+    assert body["self_trade_prevention_type"] == "maker"
+
+
+def test_order_cancel_preserves_known_fields(client, mock_response):
+    """A V2 ack must not wipe fields the Order already knew.
+
+    cancel/amend/decrease return a thin ack with no ticker/side/price. Replacing
+    the model wholesale would blank them on an object that was fully populated.
+    """
+    from pykalshi.orders import Order
+    from pykalshi.models import OrderModel
+
+    order = Order(client, OrderModel(
+        order_id="order-abc-123",
+        ticker="KXTEST",
+        status=OrderStatus.RESTING,
+        action=Action.BUY,
+        side=Side.YES,
+        yes_price_dollars="0.55",
+        remaining_count_fp="10.00",
+    ))
+
+    client._session.request.return_value = mock_response(
+        {"order_id": "order-abc-123", "reduced_by": "10.00", "ts_ms": 1}
+    )
+
+    order.cancel()
+
+    assert order.status == OrderStatus.CANCELED   # updated from the ack
+    assert order.ticker == "KXTEST"               # preserved
+    assert order.data.action == Action.BUY        # preserved
+    assert order.data.side == Side.YES            # preserved
+    assert order.data.yes_price_dollars == "0.55" # preserved

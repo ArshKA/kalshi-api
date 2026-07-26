@@ -90,13 +90,26 @@ from pykalshi import Action, Side, OrderStatus
 balance = client.portfolio.get_balance()
 print(f"${balance.balance / 100:.2f} available")
 
-# Place an order
-order = client.portfolio.place_order(market, Action.BUY, Side.YES, count_fp="10", yes_price_dollars="0.50")
+# Place an order. Orders rest on a single YES-denominated book: book_side
+# "bid" is long yes, "ask" is long no, and price_dollars is always the YES leg.
+order = client.portfolio.place_order(market, book_side="bid", price_dollars="0.50", count_fp="10")
+
+# An ask at 0.17 is the same resting order as buying NO at 0.83 -- no mental
+# 1-p conversion needed.
+order = client.portfolio.place_order(market, book_side="ask", price_dollars="0.17", count_fp="10")
+
+# Read direction back with book_side / outcome_side. The legacy action/side
+# pair is deprecated by Kalshi and means different things on orders vs fills.
+assert order.book_side.value == "ask" and order.is_ask
 
 # Manage orders
-order.wait_until_terminal()  # Block until filled/canceled
-order.modify(yes_price=45)   # Amend price
-order.cancel()               # Cancel
+order.wait_until_terminal()                    # Block until filled/canceled
+order.amend(price_dollars="0.45")              # Amend price (YES leg)
+order.decrease(reduce_by_fp="5")               # Shrink the resting size
+order.cancel()                                 # Cancel
+
+# The legacy vocabulary still works and maps onto the same wire body:
+order = client.portfolio.place_order(market, Action.BUY, Side.NO, count_fp="10", no_price_dollars="0.83")
 
 # View portfolio
 positions = client.portfolio.get_positions()

@@ -37,7 +37,7 @@ pytest tests/ --cov=pykalshi
 | `test_portfolio.py` | Portfolio operations: positions, fills, orders |
 | `test_workflow.py` | End-to-end workflows: balance, order placement, orderbook |
 | `test_feed.py` | WebSocket feed: subscriptions, handlers, message dispatch |
-| `test_exchange.py` | Exchange status, schedule, announcements |
+| `test_exchange.py` | Exchange status, schedule |
 | `test_api_keys.py` | API key management: list, create, generate, delete, rate limits |
 | `test_series.py` | Series, public trades, batch candlesticks |
 | `test_markets.py` | Markets and events: fetch, list, candlesticks, filters |
@@ -83,7 +83,6 @@ pytest tests/ --cov=pykalshi
 - `client.exchange.get_status()` - operational status
 - `client.exchange.is_trading()` - quick boolean check
 - `client.exchange.get_schedule()` - trading hours
-- `client.exchange.get_announcements()` - platform announcements
 - `client.exchange.get_user_data_timestamp()` - data validation timestamp
 - Cached property behavior
 
