@@ -2,7 +2,9 @@
 
 import time
 import pytest
-from pykalshi.enums import Action, Side, OrderStatus, MarketStatus
+from pykalshi.enums import (
+    Action, Side, OrderStatus, MarketStatus, BookSide, OutcomeSide,
+)
 from pykalshi.exceptions import ResourceNotFoundError
 
 
@@ -663,8 +665,8 @@ class TestV2OrderSurface:
 
         client = recorded_client
         order = client.portfolio.place_order(
-            market_for_orders, action=Action.BUY, side=Side.YES,
-            count_fp="1", yes_price_dollars="0.01",
+            market_for_orders, book_side="bid", price_dollars="0.01",
+            count_fp="1",
         )
         try:
             self._await_order(client, order.order_id)
@@ -696,20 +698,31 @@ class TestV2OrderSurface:
         400 invalid_order.)
         """
         order = client.portfolio.place_order(
-            market_for_orders, action=Action.BUY, side=Side.NO,
-            count_fp="1", no_price_dollars="0.01",
+            # ask at 0.99 == buy NO at 0.01, expressed canonically
+            market_for_orders, book_side="ask", price_dollars="0.99",
+            count_fp="1",
         )
         try:
-            # The returned Order echoes the caller's framing...
-            assert order.data.side == Side.NO
+            # Both the returned Order and the fetched one describe the same
+            # long-no position, and they agree on the canonical field even
+            # though their legacy (action, side) pairs differ.
+            assert order.data.book_side == BookSide.ASK
+            assert order.data.outcome_side == OutcomeSide.NO
             assert float(order.data.yes_price_dollars) == pytest.approx(0.99)
 
-            # ...while the exchange reports the normalised YES-side sell.
             fetched = self._await_order(client, order.order_id)
+            assert fetched.data.book_side == BookSide.ASK
             assert float(fetched.data.yes_price_dollars) == pytest.approx(0.99)
             assert float(fetched.data.no_price_dollars) == pytest.approx(0.01)
-            assert fetched.data.side == Side.YES
-            assert fetched.data.action == Action.SELL
+
+            # Legacy compatibility, while the server still sends it: the pair
+            # flips between what we submitted (buy/no) and what comes back
+            # (sell/yes) for one unchanged order. Skipped rather than failed
+            # once Kalshi drops these -- the canonical asserts above are the
+            # ones that must hold.
+            if fetched.data.side is not None and fetched.data.action is not None:
+                assert fetched.data.side == Side.YES
+                assert fetched.data.action == Action.SELL
         finally:
             client.portfolio.cancel_order(order.order_id)
 
@@ -721,8 +734,8 @@ class TestV2OrderSurface:
         is a different shape from v1, so verify the server state moved.
         """
         order = client.portfolio.place_order(
-            market_for_orders, action=Action.BUY, side=Side.YES,
-            count_fp="1", yes_price_dollars="0.01",
+            market_for_orders, book_side="bid", price_dollars="0.01",
+            count_fp="1",
         )
         try:
             self._await_order(client, order.order_id)
@@ -744,8 +757,8 @@ class TestV2OrderSurface:
     def test_write_ack_does_not_blank_known_fields(self, client, market_for_orders):
         """V2 acks carry no ticker/side/price; the Order must keep its own."""
         order = client.portfolio.place_order(
-            market_for_orders, action=Action.BUY, side=Side.YES,
-            count_fp="1", yes_price_dollars="0.01",
+            market_for_orders, book_side="bid", price_dollars="0.01",
+            count_fp="1",
         )
         ticker = order.ticker
         assert ticker == market_for_orders.ticker
@@ -754,7 +767,7 @@ class TestV2OrderSurface:
 
         assert order.status == OrderStatus.CANCELED
         assert order.ticker == ticker, "cancel ack wiped the ticker"
-        assert order.data.side == Side.YES
+        assert order.data.book_side == BookSide.BID, "cancel ack wiped book_side"
         assert order.data.yes_price_dollars is not None
 
     def test_batch_place_returns_populated_orders(self, client, market_for_orders):

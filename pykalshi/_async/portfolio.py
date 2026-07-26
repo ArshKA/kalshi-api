@@ -38,10 +38,12 @@ class AsyncPortfolio:
     async def place_order(
         self,
         ticker: str | AsyncMarket,
-        action: Action,
-        side: Side,
-        count_fp: str,
+        action: Action | None = None,
+        side: Side | None = None,
+        count_fp: str | None = None,
         *,
+        book_side: BookSide | str | None = None,
+        price_dollars: str | None = None,
         yes_price_dollars: str | None = None,
         no_price_dollars: str | None = None,
         client_order_id: str | None = None,
@@ -76,6 +78,32 @@ class AsyncPortfolio:
             subaccount: Subaccount number (0 for primary, 1-32 for subaccounts).
             cancel_order_on_pause: If True, cancel order if market is paused.
         """
+        # Canonical form: book_side + price_dollars, both YES-denominated. The
+        # legacy (action, side) + yes/no price remains supported and is mapped
+        # onto the same wire body.
+        if book_side is not None:
+            if action is not None or side is not None:
+                raise ValueError(
+                    "Specify book_side or action/side, not both")
+            bs = getattr(book_side, "value", book_side)
+            if bs not in ("bid", "ask"):
+                raise ValueError(f"book_side must be 'bid' or 'ask', got {book_side!r}")
+            # bid == long yes == buy YES; ask == long no == buy NO at 1-price.
+            action = Action.BUY
+            side = Side.YES if bs == "bid" else Side.NO
+            if price_dollars is not None:
+                if yes_price_dollars is not None or no_price_dollars is not None:
+                    raise ValueError(
+                        "Specify price_dollars or yes/no_price_dollars, not both")
+                # price_dollars is always the YES-leg price.
+                yes_price_dollars = price_dollars
+        elif price_dollars is not None:
+            raise ValueError("price_dollars requires book_side")
+        if action is None or side is None:
+            raise ValueError("place_order requires either book_side or action+side")
+        if count_fp is None:
+            raise ValueError("place_order requires count_fp")
+
         # Extract market structure for validation when a Market object is passed
         pls = None
         fte = None
