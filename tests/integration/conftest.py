@@ -166,7 +166,15 @@ def pytest_runtest_makereport(item, call):
         text = str(call.excinfo.value)
         if "503" in text and "service_unavailable" in text:
             report.outcome = "skipped"
-            report.longrepr = f"Demo exchange unavailable (503): {text[:200]}"
+            # A skipped report's longrepr must be the (path, lineno, reason)
+            # tuple the terminal reporter unpacks; a bare string makes it
+            # assert in _get_raw_skip_reason.
+            path, lineno = item.location[0], (item.location[1] or 0)
+            report.longrepr = (
+                path,
+                lineno + 1,
+                f"Skipped: demo exchange unavailable (503): {text[:160]}",
+            )
 
 
 # --- Endpoint recording ------------------------------------------------------
