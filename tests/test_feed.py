@@ -42,9 +42,31 @@ class TestFeedCreation:
 
     def test_production_url(self, client):
         """Feed uses production WS URL when client is in production mode."""
+        client.api_base = "https://external-api.kalshi.com/trade-api/v2"
+        feed = Feed(client)
+        assert feed._ws_url == DEFAULT_WS_BASE
+
+    def test_legacy_production_url_still_routes_to_prod(self, client):
+        """The legacy prod REST host still selects the prod socket.
+
+        Kalshi lists api.elections.kalshi.com as "also supported", so a caller
+        passing it explicitly must not fall through to the demo socket. Selection
+        is a `"demo" in api_base` substring test, so this pins the negative case.
+        """
         client.api_base = "https://api.elections.kalshi.com/trade-api/v2"
         feed = Feed(client)
         assert feed._ws_url == DEFAULT_WS_BASE
+
+    def test_demo_host_not_confused_with_prod(self, client):
+        """external-api.demo.kalshi.co must select demo, not prod.
+
+        The two recommended hosts now differ only by the `.demo` label
+        (external-api.kalshi.com vs external-api.demo.kalshi.co), so the
+        substring test is load-bearing in both directions.
+        """
+        client.api_base = "https://external-api.demo.kalshi.co/trade-api/v2"
+        feed = Feed(client)
+        assert feed._ws_url == DEMO_WS_BASE
 
     def test_initial_state(self, client):
         """Feed starts in disconnected state with no subs or handlers."""
