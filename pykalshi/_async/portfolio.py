@@ -40,12 +40,12 @@ class AsyncPortfolio:
         yes_price_dollars: str | None = None,
         no_price_dollars: str | None = None,
         client_order_id: str | None = None,
-        time_in_force: TimeInForce | None = None,
+        time_in_force: TimeInForce | None = TimeInForce.GTC,
         post_only: bool = False,
         reduce_only: bool = False,
         expiration_ts: int | None = None,
         buy_max_cost_dollars: str | None = None,
-        self_trade_prevention: SelfTradePrevention | None = None,
+        self_trade_prevention: SelfTradePrevention | None = SelfTradePrevention.CANCEL_RESTING,
         order_group_id: str | None = None,
         subaccount: int | None = None,
         cancel_order_on_pause: bool | None = None,
@@ -91,7 +91,14 @@ class AsyncPortfolio:
             fractional_trading_enabled=fte,
         )
         response = await self._client.post("/portfolio/events/orders", order_data)
-        model = OrderModel.model_validate(response["order"])
+        model = self._order_from_v2_ack(
+            response,
+            ticker=order_data.get("ticker"),
+            status=self._v2_status_from_ack(response),
+            action=action,
+            side=side,
+            yes_price_dollars=order_data.get("price"),
+        )
         return AsyncOrder(self._client, model)
 
     async def cancel_order(self, order_id: str, *, subaccount: int | None = None) -> AsyncOrder:
@@ -108,7 +115,9 @@ class AsyncPortfolio:
         if subaccount is not None:
             endpoint += f"?subaccount={subaccount}"
         response = await self._client.delete(endpoint)
-        model = OrderModel.model_validate(response["order"])
+        model = self._order_from_v2_ack(
+            response, ticker=response.get("ticker"), status=OrderStatus.CANCELED
+        )
         return AsyncOrder(self._client, model)
 
     async def amend_order(
@@ -147,28 +156,48 @@ class AsyncPortfolio:
 
         ticker = normalize_ticker(ticker)
 
-        # Fetch original order to get required fields if not provided
-        if ticker is None or action is None or side is None or count_fp is None:
+        # AmendOrderV2Request requires ticker, side, price and count, so fetch
+        # the original order for anything the caller left out (including price,
+        # which the v1 body did not need).
+        if (ticker is None or action is None or side is None
+                or count_fp is None or yes_price_dollars is None):
             original = await self.get_order(order_id)
             ticker = ticker or original.ticker
             action = action or original.action
             side = side or original.side
             if count_fp is None:
                 count_fp = original.remaining_count_fp
+            if yes_price_dollars is None:
+                yes_price_dollars = original.data.yes_price_dollars
+                if yes_price_dollars is None and original.data.no_price_dollars is not None:
+                    yes_price_dollars = str(
+                        Decimal("1") - Decimal(original.data.no_price_dollars)
+                    )
+
+        if yes_price_dollars is None:
+            raise ValueError(
+                "amend requires a price; none was supplied and none could be "
+                "resolved from the existing order"
+            )
 
         body: dict = {
             "ticker": ticker,
-            "action": action.value if isinstance(action, Action) else action,
-            "side": side.value if isinstance(side, Side) else side,
-            "count_fp": count_fp,
+            "side": AsyncPortfolio._v2_book_side(action, side),
+            "price": f"{Decimal(yes_price_dollars):.4f}",
+            "count": count_fp,
         }
-        if yes_price_dollars is not None:
-            body["yes_price_dollars"] = yes_price_dollars
         if subaccount is not None:
             body["subaccount"] = subaccount
 
         response = await self._client.post(f"/portfolio/events/orders/{order_id}/amend", body)
-        model = OrderModel.model_validate(response["order"])
+        model = self._order_from_v2_ack(
+            response,
+            ticker=ticker,
+            status=self._v2_status_from_ack(response),
+            action=action,
+            side=side,
+            yes_price_dollars=body["price"],
+        )
         return AsyncOrder(self._client, model)
 
     async def decrease_order(self, order_id: str, reduce_by_fp: str) -> AsyncOrder:
@@ -179,9 +208,13 @@ class AsyncPortfolio:
             reduce_by_fp: Number of contracts to reduce by (fixed-point string).
         """
         response = await self._client.post(
-            f"/portfolio/events/orders/{order_id}/decrease", {"reduce_by_fp": reduce_by_fp}
+            f"/portfolio/events/orders/{order_id}/decrease", {"reduce_by": reduce_by_fp}
         )
-        model = OrderModel.model_validate(response["order"])
+        model = self._order_from_v2_ack(
+            response,
+            ticker=response.get("ticker"),
+            status=self._v2_status_from_ack(response),
+        )
         return AsyncOrder(self._client, model)
 
     async def get_orders(
@@ -220,12 +253,12 @@ class AsyncPortfolio:
             "cursor": cursor,
             **extra_params,
         }
-        data = await self._client.paginated_get("/portfolio/events/orders", "orders", params, fetch_all)
+        data = await self._client.paginated_get("/portfolio/orders", "orders", params, fetch_all)
         return DataFrameList(AsyncOrder(self._client, OrderModel.model_validate(d)) for d in data)
 
     async def get_order(self, order_id: str) -> AsyncOrder:
         """Get a single order by ID."""
-        response = await self._client.get(f"/portfolio/events/orders/{order_id}")
+        response = await self._client.get(f"/portfolio/orders/{order_id}")
         model = OrderModel.model_validate(response["order"])
         return AsyncOrder(self._client, model)
 
@@ -316,13 +349,9 @@ class AsyncPortfolio:
         """
         prepared = self._build_batch_orders(orders)
         response = await self._client.post("/portfolio/events/orders/batched", {"orders": prepared})
-        result = []
-        for item in (response.get("orders") or []):
-            order_data = item.get("order")
-            if order_data is None:
-                continue
-            result.append(AsyncOrder(self._client, OrderModel.model_validate(order_data)))
-        return DataFrameList(result)
+        return DataFrameList(
+            AsyncOrder(self._client, m) for m in self._orders_from_v2_batch(response)
+        )
 
     async def batch_cancel_orders(self, order_ids: list[str]) -> DataFrameList[AsyncOrder]:
         """Cancel multiple orders atomically.
@@ -335,19 +364,15 @@ class AsyncPortfolio:
         """
         orders = [{"order_id": oid} for oid in order_ids]
         response = await self._client.delete("/portfolio/events/orders/batched", {"orders": orders})
-        result = []
-        for item in (response.get("orders") or []):
-            order_data = item.get("order")
-            if order_data is None:
-                continue
-            result.append(AsyncOrder(self._client, OrderModel.model_validate(order_data)))
-        return DataFrameList(result)
+        return DataFrameList(
+            AsyncOrder(self._client, m) for m in self._orders_from_v2_batch(response)
+        )
 
     # --- Queue Position ---
 
     async def get_queue_position(self, order_id: str) -> QueuePositionModel:
         """Get queue position for a single resting order."""
-        response = await self._client.get(f"/portfolio/events/orders/{order_id}/queue_position")
+        response = await self._client.get(f"/portfolio/orders/{order_id}/queue_position")
         return QueuePositionModel(
             order_id=order_id,
             queue_position_fp=response.get("queue_position_fp", "0.00"),
@@ -366,7 +391,7 @@ class AsyncPortfolio:
         if event_ticker:
             params["event_ticker"] = normalize_ticker(event_ticker)
 
-        endpoint = "/portfolio/events/orders/queue_positions"
+        endpoint = "/portfolio/orders/queue_positions"
         if params:
             endpoint = f"{endpoint}?{urlencode(params)}"
 
@@ -553,6 +578,100 @@ class AsyncPortfolio:
                     f"count_fp must be a whole number, got {count_fp}"
                 )
 
+
+    @staticmethod
+    def _v2_book_side(action: Action | str | None, side: Side | str | None) -> str:
+        """Map v1 (action, side) onto the V2 single-book side.
+
+        The V2 book is YES-denominated, so buying NO is the same as selling YES.
+        Accepts enums or their raw string values (batch payloads use strings).
+        """
+        a = action.value if isinstance(action, Action) else action
+        sd = side.value if isinstance(side, Side) else side
+        if sd == Side.YES.value:
+            return "bid" if a == Action.BUY.value else "ask"
+        if sd == Side.NO.value:
+            return "ask" if a == Action.BUY.value else "bid"
+        raise ValueError(f"Unsupported action/side combination: {action!r}/{side!r}")
+
+    @staticmethod
+    def _v2_status_from_ack(response: dict) -> OrderStatus:
+        remaining = response.get("remaining_count")
+        try:
+            if remaining is not None and Decimal(str(remaining)) <= 0:
+                return OrderStatus.EXECUTED
+        except (ArithmeticError, ValueError):
+            pass
+        return OrderStatus.RESTING
+
+    @staticmethod
+    def _order_from_v2_ack(
+        response: dict,
+        *,
+        ticker: str | None,
+        status: OrderStatus,
+        action: Action | None = None,
+        side: Side | None = None,
+        yes_price_dollars: str | None = None,
+    ) -> OrderModel:
+        """Build an OrderModel from a V2 write acknowledgement.
+
+        V2 write endpoints return a thin ack, not the full order object the v1
+        endpoints nested under a top-level "order" key. CreateOrderV2Response is
+        {order_id, client_order_id?, fill_count, remaining_count, ts_ms,
+        average_fill_price?}; cancel and amend return even less.
+
+        Rather than spend a round-trip re-fetching the order -- unacceptable for
+        latency-sensitive callers that requote continuously -- reconstruct the
+        model from the ack plus the request context the caller already supplied.
+        This preserves the documented `-> Order` return contract. Fields that
+        neither the ack nor the caller provides are left unset.
+        """
+        data: dict = {
+            "order_id": response["order_id"],
+            "ticker": ticker or "",
+            "status": status,
+        }
+        if response.get("client_order_id") is not None:
+            data["client_order_id"] = response["client_order_id"]
+        if response.get("fill_count") is not None:
+            data["fill_count_fp"] = response["fill_count"]
+        if response.get("remaining_count") is not None:
+            data["remaining_count_fp"] = response["remaining_count"]
+        if action is not None:
+            data["action"] = action.value if isinstance(action, Action) else action
+        if side is not None:
+            data["side"] = side.value if isinstance(side, Side) else side
+        if yes_price_dollars is not None:
+            data["yes_price_dollars"] = yes_price_dollars
+        return OrderModel.model_validate(data)
+
+    @staticmethod
+    def _orders_from_v2_batch(response: dict) -> list[OrderModel]:
+        """Parse a batched response, tolerating the thin-ack item shape as well
+        as the legacy {"order": {...}} wrapper."""
+        models: list[OrderModel] = []
+        for item in (response.get("orders") or []):
+            if not isinstance(item, dict):
+                continue
+            legacy = item.get("order")
+            if isinstance(legacy, dict):
+                models.append(OrderModel.model_validate(legacy))
+            elif item.get("order_id") is not None:
+                entry: dict = {
+                    "order_id": item["order_id"],
+                    "ticker": item.get("ticker") or "",
+                    "status": item.get("status") or OrderStatus.RESTING,
+                }
+                if item.get("client_order_id") is not None:
+                    entry["client_order_id"] = item["client_order_id"]
+                if item.get("remaining_count") is not None:
+                    entry["remaining_count_fp"] = item["remaining_count"]
+                if item.get("fill_count") is not None:
+                    entry["fill_count_fp"] = item["fill_count"]
+                models.append(OrderModel.model_validate(entry))
+        return models
+
     @staticmethod
     def _build_order_data(
         ticker,
@@ -587,11 +706,13 @@ class AsyncPortfolio:
             raise ValueError("Limit orders require yes_price_dollars or no_price_dollars")
 
         if no_price_dollars is not None:
-            yes_price_dollars = str(Decimal("1") - Decimal(no_price_dollars))
+            yes_price = Decimal("1") - Decimal(no_price_dollars)
+        else:
+            yes_price = Decimal(yes_price_dollars)
 
         # Validate tick size if market structure is known
-        if price_level_structure and yes_price_dollars is not None:
-            AsyncPortfolio._validate_tick_size(Decimal(yes_price_dollars), price_level_structure)
+        if price_level_structure:
+            AsyncPortfolio._validate_tick_size(yes_price, price_level_structure)
 
         # Validate fractional trading
         if fractional_trading_enabled is not None:
@@ -601,25 +722,31 @@ class AsyncPortfolio:
 
         order_data: dict = {
             "ticker": ticker_str,
-            "action": action.value,
-            "side": side.value,
-            "count_fp": count_fp,
-            "yes_price_dollars": yes_price_dollars,
+            "side": AsyncPortfolio._v2_book_side(action, side),
+            "count": count_fp,
+            "price": f"{yes_price:.4f}",
         }
+        # time_in_force and self_trade_prevention_type are REQUIRED by
+        # CreateOrderV2Request; fall back to the documented defaults rather than
+        # omitting them and getting a 400 missing_parameters.
+        order_data["time_in_force"] = (
+            time_in_force.value if time_in_force is not None else TimeInForce.GTC.value
+        )
+        order_data["self_trade_prevention_type"] = (
+            self_trade_prevention.value
+            if self_trade_prevention is not None
+            else SelfTradePrevention.CANCEL_RESTING.value
+        )
         if client_order_id is not None:
             order_data["client_order_id"] = client_order_id
-        if time_in_force is not None:
-            order_data["time_in_force"] = time_in_force.value
         if post_only:
             order_data["post_only"] = True
         if reduce_only:
             order_data["reduce_only"] = True
         if expiration_ts is not None:
-            order_data["expiration_ts"] = expiration_ts
+            order_data["expiration_time"] = expiration_ts
         if buy_max_cost_dollars is not None:
             order_data["buy_max_cost_dollars"] = buy_max_cost_dollars
-        if self_trade_prevention is not None:
-            order_data["self_trade_prevention_type"] = self_trade_prevention.value
         if order_group_id is not None:
             order_data["order_group_id"] = order_group_id
         if subaccount is not None:
@@ -630,7 +757,12 @@ class AsyncPortfolio:
 
     @staticmethod
     def _build_batch_orders(orders: list[dict]) -> list[dict]:
-        """Validate and prepare batch orders. No I/O."""
+        """Validate and prepare batch orders for BatchCreateOrdersV2Request. No I/O.
+
+        Accepts the v1-style dicts this library has always taken (action + yes/no
+        side + count_fp + yes/no price) and converts each to the V2 item shape
+        (single-book bid/ask side, YES-denominated price, count).
+        """
         prepared = []
         for order in orders:
             o = dict(order)
@@ -640,8 +772,25 @@ class AsyncPortfolio:
             if "yes_price_dollars" not in o and "no_price_dollars" not in o:
                 raise ValueError("Limit orders require yes_price_dollars or no_price_dollars")
             if "no_price_dollars" in o:
-                o["yes_price_dollars"] = str(Decimal("1") - Decimal(o.pop("no_price_dollars")))
-            # Strip "type" -- Kalshi API no longer accepts it
+                yes_price = Decimal("1") - Decimal(o.pop("no_price_dollars"))
+            else:
+                yes_price = Decimal(o.pop("yes_price_dollars"))
+            # "type" is not part of the V2 request shape
             o.pop("type", None)
-            prepared.append(o)
+
+            item: dict = {
+                "ticker": o.pop("ticker"),
+                "side": AsyncPortfolio._v2_book_side(o.pop("action", None), o.pop("side", None)),
+                "count": o.pop("count_fp", None) or o.pop("count", None),
+                "price": f"{yes_price:.4f}",
+            }
+            item.setdefault("time_in_force", TimeInForce.GTC.value)
+            item.setdefault("self_trade_prevention_type",
+                            SelfTradePrevention.CANCEL_RESTING.value)
+            if "expiration_ts" in o:
+                o["expiration_time"] = o.pop("expiration_ts")
+            # pass through any remaining V2-valid fields (client_order_id,
+            # time_in_force, self_trade_prevention_type, exchange_index, ...)
+            item.update(o)
+            prepared.append(item)
         return prepared

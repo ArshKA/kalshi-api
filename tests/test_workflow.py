@@ -28,18 +28,13 @@ def test_user_balance_workflow(client, mock_response):
 
 def test_place_order_workflow(client, mock_response, mocker):
     """Test placing an order via Portfolio object."""
+    # CreateOrderV2Response is a thin ack, not a full order object.
     client._session.request.return_value = mock_response(
         {
-            "order": {
-                "order_id": "bfs-123",
-                "ticker": "KXTEST",
-                "action": "buy",
-                "side": "yes",
-                "initial_count_fp": "5.00",
-                "yes_price_dollars": "0.50",
-                "status": "resting",
-                "created_time": "2023-01-01T00:00:00Z",
-            }
+            "order_id": "bfs-123",
+            "fill_count": "0.00",
+            "remaining_count": "5.00",
+            "ts_ms": 1715793600123,
         }
     )
 
@@ -61,10 +56,9 @@ def test_place_order_workflow(client, mock_response, mocker):
     assert "/portfolio/events/orders" in call_args.args[1]
     body = json.loads(call_args.kwargs["content"])
     assert body["ticker"] == "KXTEST"
-    assert body["action"] == "buy"
-    assert body["side"] == "yes"
-    assert body["count_fp"] == "5.00"
-    assert body["yes_price_dollars"] == "0.50"
+    assert body["side"] == "bid"
+    assert body["count"] == "5.00"
+    assert body["price"] == "0.5000"
 
 
 def test_market_orderbook_workflow(client, mock_response):
@@ -189,7 +183,7 @@ class TestTickSizeValidation:
             "1",
             yes_price_dollars="0.451",
         )
-        assert data["yes_price_dollars"] == "0.451"
+        assert data["price"] == "0.4510"
 
 
 class TestFractionalTradingValidation:
@@ -231,4 +225,4 @@ class TestFractionalTradingValidation:
             yes_price_dollars="0.45",
             fractional_trading_enabled=True,
         )
-        assert data["count_fp"] == "5.50"
+        assert data["count"] == "5.50"
