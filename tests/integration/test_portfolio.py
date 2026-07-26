@@ -612,13 +612,19 @@ class TestV2OrderSurface:
     """
 
     @staticmethod
-    def _await_order(client, order_id, tries=8, delay=0.5):
+    def _await_order(client, order_id, until=None, tries=8, delay=0.5):
         """Fetch an order, tolerating read-after-write lag.
 
         Writes are acknowledged by the matching engine but reads are served by
         query-exchange, which indexes a moment later. Until it catches up,
         GET /portfolio/orders/{id} returns 404 not_found (an unknown order --
-        distinct from the "404 page not found" you get from a missing route).
+        distinct from the "404 page not found" you get from a missing route),
+        and an order that does exist can still be returned in its pre-write
+        state.
+
+        `until` is an optional predicate on the fetched order; polling continues
+        until it holds, so a test can wait for its own write to land rather than
+        racing it.
         """
         import time as _time
         from pykalshi.exceptions import ResourceNotFoundError
@@ -626,11 +632,14 @@ class TestV2OrderSurface:
         last = None
         for attempt in range(tries):
             try:
-                return client.portfolio.get_order(order_id)
+                order = client.portfolio.get_order(order_id)
+                if until is None or until(order):
+                    return order
+                last = f"predicate not yet satisfied (attempt {attempt + 1})"
             except ResourceNotFoundError as exc:
                 last = exc
-                _time.sleep(delay * (attempt + 1))
-        pytest.skip(f"order {order_id} not visible to query-exchange in time: {last}")
+            _time.sleep(delay * (attempt + 1))
+        pytest.skip(f"order {order_id} did not reach the expected state in time: {last}")
 
     @pytest.fixture
     def market_for_orders(self, trading_client):
@@ -720,7 +729,10 @@ class TestV2OrderSurface:
                 order.order_id, count_fp="3", yes_price_dollars="0.01",
             )
 
-            after = self._await_order(client, order.order_id)
+            after = self._await_order(
+                client, order.order_id,
+                until=lambda o: float(o.data.remaining_count_fp or 0) == 3.0,
+            )
             assert float(after.data.remaining_count_fp) == pytest.approx(3.0)
             assert float(after.data.yes_price_dollars) == pytest.approx(0.01), (
                 "amend must preserve the price when only the count changes"
