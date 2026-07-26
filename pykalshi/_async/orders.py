@@ -125,6 +125,7 @@ class AsyncOrder:
         self,
         *,
         count_fp: str | None = None,
+        price_dollars: str | None = None,
         yes_price_dollars: str | None = None,
         no_price_dollars: str | None = None,
     ) -> AsyncOrder:
@@ -132,6 +133,7 @@ class AsyncOrder:
 
         Args:
             count_fp: New total contract count (fixed-point string).
+            price_dollars: New price, YES-denominated (canonical form).
             yes_price_dollars: New YES price (dollar string).
             no_price_dollars: New NO price (dollar string, converted to yes internally).
 
@@ -142,6 +144,12 @@ class AsyncOrder:
         # let amend_order re-fetch the order -- that is an extra round-trip on
         # every count-only amend, and it 404s if query-exchange has not yet
         # indexed a freshly placed order.
+        if price_dollars is not None:
+            if yes_price_dollars is not None or no_price_dollars is not None:
+                raise ValueError(
+                    "Specify price_dollars or yes/no_price_dollars, not both")
+            yes_price_dollars = price_dollars
+
         if yes_price_dollars is None and no_price_dollars is None:
             yes_price_dollars = self.data.yes_price_dollars
 
