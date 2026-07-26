@@ -39,7 +39,14 @@ class Exchange:
         return data.get("schedule", {})
 
     def get_announcements(self) -> list[Announcement]:
-        """Get exchange-wide announcements."""
+        """Get exchange-wide announcements.
+
+        .. deprecated::
+            Kalshi has removed ``GET /exchange/announcements``; it now returns
+            404 and no longer appears in the API reference. This method cannot
+            succeed. Kept for backwards compatibility -- removing it is a
+            breaking change and left to the maintainer's discretion.
+        """
         data = self._client.get("/exchange/announcements")
         return [Announcement.model_validate(a) for a in (data.get("announcements") or [])]
 

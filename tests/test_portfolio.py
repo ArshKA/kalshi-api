@@ -673,6 +673,31 @@ def test_batch_place_orders_converts_to_v2_items(client, mock_response):
         "self_trade_prevention_type": "maker",
     }
     assert [o.order_id for o in orders] == ["o1", "o2"]
+    # Batch acks carry no ticker/price either, so the request context must be
+    # folded back in -- otherwise callers get blank tickers and null prices.
+    assert [o.ticker for o in orders] == ["KXTEST", "KXTEST"]
+    assert orders[0].data.yes_price_dollars == "0.4500"
+    assert orders[1].data.yes_price_dollars == "0.5500"
+    assert orders[0].data.side == Side.YES
+    assert orders[1].data.side == Side.NO
+
+
+def test_batch_place_orders_matches_acks_by_client_order_id(client, mock_response):
+    """Acks returned out of order must still line up with their requests."""
+    client._session.request.return_value = mock_response({"orders": [
+        {"order_id": "o2", "client_order_id": "c2", "remaining_count": "5.00", "ts_ms": 2},
+        {"order_id": "o1", "client_order_id": "c1", "remaining_count": "10.00", "ts_ms": 1},
+    ]})
+
+    orders = client.portfolio.batch_place_orders([
+        {"ticker": "KXAAA", "action": "buy", "side": "yes", "count_fp": "10.00",
+         "yes_price_dollars": "0.45", "client_order_id": "c1"},
+        {"ticker": "KXBBB", "action": "buy", "side": "yes", "count_fp": "5.00",
+         "yes_price_dollars": "0.60", "client_order_id": "c2"},
+    ])
+
+    got = {o.order_id: (o.ticker, o.data.yes_price_dollars) for o in orders}
+    assert got == {"o2": ("KXBBB", "0.6000"), "o1": ("KXAAA", "0.4500")}
 
 
 def test_batch_cancel_orders_parses_ack_items(client, mock_response):

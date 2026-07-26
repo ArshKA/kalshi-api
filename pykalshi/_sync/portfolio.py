@@ -352,7 +352,8 @@ class Portfolio:
         prepared = self._build_batch_orders(orders)
         response = self._client.post("/portfolio/events/orders/batched", {"orders": prepared})
         return DataFrameList(
-            Order(self._client, m) for m in self._orders_from_v2_batch(response)
+            Order(self._client, m)
+            for m in self._orders_from_v2_batch(response, prepared, orders)
         )
 
     def batch_cancel_orders(self, order_ids: list[str]) -> DataFrameList[Order]:
@@ -648,29 +649,62 @@ class Portfolio:
         return OrderModel.model_validate(data)
 
     @staticmethod
-    def _orders_from_v2_batch(response: dict) -> list[OrderModel]:
+    def _orders_from_v2_batch(
+        response: dict,
+        prepared: list[dict] | None = None,
+        originals: list[dict] | None = None,
+    ) -> list[OrderModel]:
         """Parse a batched response, tolerating the thin-ack item shape as well
-        as the legacy {"order": {...}} wrapper."""
+        as the legacy {"order": {...}} wrapper.
+
+        Like the single-order acks, batch acks carry no ticker/price/side, so the
+        request that produced each one is folded back in. Items are matched by
+        client_order_id where the caller supplied one, else positionally.
+        """
+        items = response.get("orders") or []
+        prepared = prepared or []
+        originals = originals or []
+        by_coid = {
+            p.get("client_order_id"): i
+            for i, p in enumerate(prepared)
+            if p.get("client_order_id")
+        }
+
         models: list[OrderModel] = []
-        for item in (response.get("orders") or []):
+        for idx, item in enumerate(items):
             if not isinstance(item, dict):
                 continue
             legacy = item.get("order")
             if isinstance(legacy, dict):
                 models.append(OrderModel.model_validate(legacy))
-            elif item.get("order_id") is not None:
-                entry: dict = {
-                    "order_id": item["order_id"],
-                    "ticker": item.get("ticker") or "",
-                    "status": item.get("status") or OrderStatus.RESTING,
-                }
-                if item.get("client_order_id") is not None:
-                    entry["client_order_id"] = item["client_order_id"]
-                if item.get("remaining_count") is not None:
-                    entry["remaining_count_fp"] = item["remaining_count"]
-                if item.get("fill_count") is not None:
-                    entry["fill_count_fp"] = item["fill_count"]
-                models.append(OrderModel.model_validate(entry))
+                continue
+            if item.get("order_id") is None:
+                continue
+
+            i = by_coid.get(item.get("client_order_id"), idx)
+            req = prepared[i] if i < len(prepared) else {}
+            orig = originals[i] if i < len(originals) else {}
+
+            entry: dict = {
+                "order_id": item["order_id"],
+                "ticker": item.get("ticker") or req.get("ticker") or "",
+                "status": item.get("status")
+                or Portfolio._v2_status_from_ack(item),
+            }
+            # The V2 request price is already YES-denominated.
+            if req.get("price") is not None:
+                entry["yes_price_dollars"] = req["price"]
+            if orig.get("action") is not None:
+                entry["action"] = orig["action"]
+            if orig.get("side") is not None:
+                entry["side"] = orig["side"]
+            if item.get("client_order_id") is not None:
+                entry["client_order_id"] = item["client_order_id"]
+            if item.get("remaining_count") is not None:
+                entry["remaining_count_fp"] = item["remaining_count"]
+            if item.get("fill_count") is not None:
+                entry["fill_count_fp"] = item["fill_count"]
+            models.append(OrderModel.model_validate(entry))
         return models
 
     @staticmethod

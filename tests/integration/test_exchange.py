@@ -26,6 +26,12 @@ class TestExchangeStatus:
         assert isinstance(schedule, dict)
         assert "maintenance_windows" in schedule or "standard_hours" in schedule
 
+    @pytest.mark.xfail(
+        reason="Kalshi removed GET /exchange/announcements; it 404s and is no "
+               "longer in the API reference. Whether to drop the method is a "
+               "breaking-change decision for the maintainer.",
+        strict=False,
+    )
     def test_get_announcements(self, client):
         """Exchange announcements returns list."""
         announcements = client.exchange.get_announcements()
