@@ -495,3 +495,124 @@ class TestFillDirectionAgainstParentOrder:
             assert correct != misapplied, (
                 f"expected the order mapper to disagree on fill {action}/{side}"
             )
+
+
+class TestCanonicalOrderInput:
+    """place_order accepts the canonical vocabulary, so a caller never has to
+    touch the deprecated action/side pair."""
+
+    def _ack(self):
+        return {"order_id": "o1", "client_order_id": "c", "fill_count": "0.00",
+                "remaining_count": "10.00", "ts_ms": 1}
+
+    def test_bid_is_long_yes(self, client, mock_response):
+        import json
+        client._session.request.return_value = mock_response(self._ack())
+        client.portfolio.place_order(
+            "KXTEST", book_side="bid", price_dollars="0.55", count_fp="10")
+        body = json.loads(client._session.request.call_args.kwargs["content"])
+        assert body["side"] == "bid" and body["price"] == "0.5500"
+
+    def test_ask_price_is_yes_denominated(self, client, mock_response):
+        """price_dollars is always the YES leg, so an ask at 0.17 stays 0.17 --
+        no mental 1-p conversion, which is the whole point of the V2 book."""
+        import json
+        client._session.request.return_value = mock_response(self._ack())
+        client.portfolio.place_order(
+            "KXTEST", book_side="ask", price_dollars="0.17", count_fp="10")
+        body = json.loads(client._session.request.call_args.kwargs["content"])
+        assert body["side"] == "ask" and body["price"] == "0.1700"
+
+    def test_matches_the_legacy_form_exactly(self, client, mock_response):
+        """buy NO @0.83 and ask @0.17 must produce the same wire body."""
+        import json
+        from pykalshi.enums import Action, Side
+        bodies = []
+        for kwargs in (
+            dict(action=Action.BUY, side=Side.NO, count_fp="10", no_price_dollars="0.83"),
+            dict(book_side="ask", price_dollars="0.17", count_fp="10"),
+        ):
+            client._session.request.return_value = mock_response(self._ack())
+            client.portfolio.place_order("KXTEST", **kwargs)
+            bodies.append(json.loads(client._session.request.call_args.kwargs["content"]))
+        assert bodies[0] == bodies[1]
+
+    def test_returned_order_carries_canonical_direction(self, client, mock_response):
+        client._session.request.return_value = mock_response(self._ack())
+        order = client.portfolio.place_order(
+            "KXTEST", book_side="ask", price_dollars="0.17", count_fp="10")
+        assert order.book_side == BookSide.ASK and order.is_ask
+
+    @pytest.mark.parametrize("kwargs,msg", [
+        (dict(book_side="bid", action="buy", side="yes", count_fp="1",
+              price_dollars="0.5"), "not both"),
+        (dict(book_side="bid", price_dollars="0.5", yes_price_dollars="0.5",
+              count_fp="1"), "not both"),
+        (dict(price_dollars="0.5", count_fp="1"), "requires book_side"),
+        (dict(count_fp="1"), r"requires either book_side or action\+side"),
+        (dict(book_side="middle", price_dollars="0.5", count_fp="1"), "bid"),
+    ])
+    def test_rejects_incoherent_combinations(self, client, kwargs, msg):
+        with pytest.raises(ValueError, match=msg):
+            client.portfolio.place_order("KXTEST", **kwargs)
+
+
+class TestCanonicalInputsEverywhere:
+    """Every write path accepts the canonical vocabulary, not just place_order."""
+
+    def _ack(self):
+        return {"order_id": "o1", "remaining_count": "10.00", "ts_ms": 1}
+
+    def test_amend_order_price_dollars(self, client, mock_response):
+        import json
+        client._session.request.return_value = mock_response(self._ack())
+        client.portfolio.amend_order(
+            "o1", count_fp="10", price_dollars="0.30",
+            ticker="KXTEST", book_side="ask")
+        body = json.loads(client._session.request.call_args.kwargs["content"])
+        assert body == {"ticker": "KXTEST", "side": "ask",
+                        "price": "0.3000", "count": "10"}
+
+    def test_order_amend_price_dollars(self, client, mock_response):
+        import json
+        from pykalshi.orders import Order
+        from pykalshi.models import OrderModel
+        order = Order(client, OrderModel.model_validate({
+            "order_id": "o1", "ticker": "KXTEST", "status": "resting",
+            "book_side": "bid", "yes_price_dollars": "0.16",
+            "fill_count_fp": "0.00", "remaining_count_fp": "800.00"}))
+        client._session.request.return_value = mock_response(self._ack())
+        order.amend(price_dollars="0.15")
+        body = json.loads(client._session.request.call_args.kwargs["content"])
+        assert body["price"] == "0.1500" and body["side"] == "bid"
+
+    def test_batch_canonical_items_match_legacy(self, client, mock_response):
+        """A canonical batch item and its legacy equivalent must serialise the same."""
+        import json
+        bodies = []
+        for items in (
+            [{"ticker": "KXTEST", "action": "buy", "side": "no",
+              "count_fp": "5.00", "no_price_dollars": "0.83"}],
+            [{"ticker": "KXTEST", "book_side": "ask",
+              "count_fp": "5.00", "price_dollars": "0.17"}],
+        ):
+            client._session.request.return_value = mock_response(
+                {"orders": [{"order_id": "o1", "remaining_count": "5.00", "ts_ms": 1}]})
+            client.portfolio.batch_place_orders(items)
+            bodies.append(json.loads(client._session.request.call_args.kwargs["content"]))
+        assert bodies[0] == bodies[1]
+        assert bodies[0]["orders"][0]["side"] == "ask"
+        assert bodies[0]["orders"][0]["price"] == "0.1700"
+
+    @pytest.mark.parametrize("item,msg", [
+        ({"ticker": "T", "book_side": "bid", "action": "buy", "side": "yes",
+          "count_fp": "1", "price_dollars": "0.5"}, "not both"),
+        ({"ticker": "T", "book_side": "bid", "count_fp": "1",
+          "price_dollars": "0.5", "yes_price_dollars": "0.5"}, "not both"),
+        ({"ticker": "T", "count_fp": "1", "price_dollars": "0.5"}, "requires book_side"),
+        ({"ticker": "T", "book_side": "middle", "count_fp": "1",
+          "price_dollars": "0.5"}, "bid"),
+    ])
+    def test_batch_rejects_incoherent_items(self, client, item, msg):
+        with pytest.raises(ValueError, match=msg):
+            client.portfolio.batch_place_orders([item])

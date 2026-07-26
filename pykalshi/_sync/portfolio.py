@@ -40,10 +40,12 @@ class Portfolio:
     def place_order(
         self,
         ticker: str | Market,
-        action: Action,
-        side: Side,
-        count_fp: str,
+        action: Action | None = None,
+        side: Side | None = None,
+        count_fp: str | None = None,
         *,
+        book_side: BookSide | str | None = None,
+        price_dollars: str | None = None,
         yes_price_dollars: str | None = None,
         no_price_dollars: str | None = None,
         client_order_id: str | None = None,
@@ -78,6 +80,32 @@ class Portfolio:
             subaccount: Subaccount number (0 for primary, 1-32 for subaccounts).
             cancel_order_on_pause: If True, cancel order if market is paused.
         """
+        # Canonical form: book_side + price_dollars, both YES-denominated. The
+        # legacy (action, side) + yes/no price remains supported and is mapped
+        # onto the same wire body.
+        if book_side is not None:
+            if action is not None or side is not None:
+                raise ValueError(
+                    "Specify book_side or action/side, not both")
+            bs = getattr(book_side, "value", book_side)
+            if bs not in ("bid", "ask"):
+                raise ValueError(f"book_side must be 'bid' or 'ask', got {book_side!r}")
+            # bid == long yes == buy YES; ask == long no == buy NO at 1-price.
+            action = Action.BUY
+            side = Side.YES if bs == "bid" else Side.NO
+            if price_dollars is not None:
+                if yes_price_dollars is not None or no_price_dollars is not None:
+                    raise ValueError(
+                        "Specify price_dollars or yes/no_price_dollars, not both")
+                # price_dollars is always the YES-leg price.
+                yes_price_dollars = price_dollars
+        elif price_dollars is not None:
+            raise ValueError("price_dollars requires book_side")
+        if action is None or side is None:
+            raise ValueError("place_order requires either book_side or action+side")
+        if count_fp is None:
+            raise ValueError("place_order requires count_fp")
+
         # Extract market structure for validation when a Market object is passed
         pls = None
         fte = None
@@ -133,6 +161,7 @@ class Portfolio:
         order_id: str,
         *,
         count_fp: str | None = None,
+        price_dollars: str | None = None,
         yes_price_dollars: str | None = None,
         no_price_dollars: str | None = None,
         subaccount: int | None = None,
@@ -146,6 +175,7 @@ class Portfolio:
 
         Args:
             order_id: ID of the order to amend.
+            price_dollars: New price, YES-denominated (canonical form).
             count_fp: New TOTAL contract count -- already-filled plus the
                 remaining size you want resting afterwards. This is the API's
                 semantics, not "the new resting size"; passing the remaining
@@ -159,6 +189,13 @@ class Portfolio:
             action: Deprecated. Legacy order action.
             side: Deprecated. Legacy order side.
         """
+        # price_dollars is the canonical, YES-denominated price.
+        if price_dollars is not None:
+            if yes_price_dollars is not None or no_price_dollars is not None:
+                raise ValueError(
+                    "Specify price_dollars or yes/no_price_dollars, not both")
+            yes_price_dollars = price_dollars
+
         if count_fp is None and yes_price_dollars is None and no_price_dollars is None:
             raise ValueError("Must specify at least one amend field")
 
@@ -850,13 +887,47 @@ class Portfolio:
     def _build_batch_orders(orders: list[dict]) -> list[dict]:
         """Validate and prepare batch orders for BatchCreateOrdersV2Request. No I/O.
 
-        Accepts the v1-style dicts this library has always taken (action + yes/no
-        side + count_fp + yes/no price) and converts each to the V2 item shape
-        (single-book bid/ask side, YES-denominated price, count).
+        Accepts either shape per item:
+
+          canonical -- {"ticker", "book_side": "bid"|"ask", "price_dollars",
+                        "count_fp"|"count"}
+          legacy    -- {"ticker", "action", "side", "yes_price_dollars" or
+                        "no_price_dollars", "count_fp"}
+
+        Both convert to the same V2 item (single-book bid/ask side,
+        YES-denominated price, count).
         """
         prepared = []
         for order in orders:
             o = dict(order)
+
+            # Canonical item: normalise into the legacy names the rest of this
+            # function already understands, then let it flow through.
+            if "book_side" in o:
+                if "action" in o or "side" in o:
+                    raise ValueError(
+                        "Batch item: specify book_side or action/side, not both")
+                bs = o.pop("book_side")
+                bs = getattr(bs, "value", bs)
+                if bs not in ("bid", "ask"):
+                    raise ValueError(
+                        f"Batch item: book_side must be 'bid' or 'ask', got {bs!r}")
+                o["action"] = "buy"
+                o["side"] = "yes" if bs == "bid" else "no"
+                if "price_dollars" in o:
+                    if "yes_price_dollars" in o or "no_price_dollars" in o:
+                        raise ValueError(
+                            "Batch item: specify price_dollars or yes/no_price_dollars,"
+                            " not both")
+                    # price_dollars is the YES leg; for an ask the legacy path
+                    # expects the NO leg, so convert.
+                    px = Decimal(o.pop("price_dollars"))
+                    if bs == "bid":
+                        o["yes_price_dollars"] = str(px)
+                    else:
+                        o["no_price_dollars"] = str(Decimal("1") - px)
+            elif "price_dollars" in o:
+                raise ValueError("Batch item: price_dollars requires book_side")
 
             if "yes_price_dollars" in o and "no_price_dollars" in o:
                 raise ValueError("Specify yes_price_dollars or no_price_dollars, not both")
