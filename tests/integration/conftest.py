@@ -146,3 +146,59 @@ def active_market(client):
             return m
 
     return markets[0]
+
+
+# --- Demo-exchange flakiness -------------------------------------------------
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item, call):
+    """Report a 503 from the demo exchange as a skip, not a failure.
+
+    The demo exchange goes unavailable for stretches. When it does, every order
+    mutation test fails with `503 service_unavailable`, which buries any real
+    regression in noise. The existing `trading_client` fixture only checks
+    whether the exchange is trading at setup time; it cannot catch an outage
+    that starts mid-run.
+    """
+    outcome = yield
+    report = outcome.get_result()
+    if report.when == "call" and report.failed and call.excinfo is not None:
+        text = str(call.excinfo.value)
+        if "503" in text and "service_unavailable" in text:
+            report.outcome = "skipped"
+            report.longrepr = f"Demo exchange unavailable (503): {text[:200]}"
+
+
+# --- Endpoint recording ------------------------------------------------------
+
+@pytest.fixture
+def recorded_client(client):
+    """A client that records (method, url) for every request it makes.
+
+    Integration tests otherwise assert only on behaviour, so a change to which
+    endpoint is called is invisible until the API happens to reject it. That is
+    exactly how the v1 order endpoints stayed in place after they were replaced.
+    Exposes `client.recorded_calls`.
+    """
+    calls: list[tuple[str, str]] = []
+    original = client._session.request
+
+    def spy(method, url, *args, **kwargs):
+        calls.append((method, str(url)))
+        return original(method, url, *args, **kwargs)
+
+    client._session.request = spy
+    client.recorded_calls = calls
+    try:
+        yield client
+    finally:
+        client._session.request = original
+
+
+def paths_for(client, method: str) -> list[str]:
+    """Recorded request paths for a given HTTP method."""
+    return [
+        url.split("/trade-api/v2", 1)[-1].split("?", 1)[0]
+        for m, url in client.recorded_calls
+        if m == method
+    ]

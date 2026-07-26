@@ -601,3 +601,134 @@ class TestOrderMutations:
         )
 
         assert terminal_order.status == OrderStatus.CANCELED
+
+
+class TestV2OrderSurface:
+    """Pin the endpoints and the direction mapping against the real API.
+
+    The rest of this suite asserts only on behaviour, which is how the v1 order
+    endpoints survived being replaced: a wrong path or an inverted side is
+    invisible if you only check that an order_id came back.
+    """
+
+    @pytest.fixture
+    def market_for_orders(self, trading_client):
+        client = trading_client
+        markets = client.get_markets(limit=10, status=MarketStatus.OPEN)
+        for m in markets:
+            if m.data.yes_bid_dollars or m.data.yes_ask_dollars:
+                return m
+        if markets:
+            return markets[0]
+        pytest.skip("No open markets available")
+
+    def test_writes_use_v2_reads_use_v1(self, recorded_client, market_for_orders):
+        """Writes go to /portfolio/events/orders; reads stay on /portfolio/orders.
+
+        POST /portfolio/orders returns 410; GET /portfolio/events/orders returns
+        404. Getting either half wrong breaks the client, so pin both.
+        """
+        from .conftest import paths_for
+
+        client = recorded_client
+        order = client.portfolio.place_order(
+            market_for_orders, action=Action.BUY, side=Side.YES,
+            count_fp="1", yes_price_dollars="0.01",
+        )
+        try:
+            client.portfolio.get_order(order.order_id)
+            list(client.portfolio.get_orders(status=OrderStatus.RESTING))
+        finally:
+            client.portfolio.cancel_order(order.order_id)
+
+        assert "/portfolio/events/orders" in paths_for(client, "POST")
+        assert f"/portfolio/events/orders/{order.order_id}" in paths_for(client, "DELETE")
+
+        gets = paths_for(client, "GET")
+        assert "/portfolio/orders" in gets
+        assert f"/portfolio/orders/{order.order_id}" in gets
+        assert not any(p.startswith("/portfolio/events/orders") for p in gets), (
+            f"read hit a V2 path, which 404s: {gets}"
+        )
+
+    def test_buy_no_rests_as_yes_side_at_complementary_price(
+        self, client, market_for_orders
+    ):
+        """buy NO @ 0.99 must rest as YES @ 0.01.
+
+        V2 quotes a single YES-denominated book, so the client converts
+        (buy, NO) -> ask at 1 - price. If that mapping were inverted the order
+        would rest on the wrong side at the wrong price, and every other test
+        here would still pass -- they only check order_id and status.
+        """
+        order = client.portfolio.place_order(
+            market_for_orders, action=Action.BUY, side=Side.NO,
+            count_fp="1", no_price_dollars="0.99",
+        )
+        try:
+            fetched = client.portfolio.get_order(order.order_id)
+            assert float(fetched.data.yes_price_dollars) == pytest.approx(0.01)
+            assert fetched.data.side == Side.NO
+            assert fetched.data.action == Action.BUY
+        finally:
+            client.portfolio.cancel_order(order.order_id)
+
+    def test_amend_actually_changes_the_resting_order(self, client, market_for_orders):
+        """Re-read after amending.
+
+        The existing amend tests assert only that a resting order came back, so a
+        no-op amend -- or one sent at the wrong price -- passes. The V2 amend body
+        is a different shape from v1, so verify the server state moved.
+        """
+        order = client.portfolio.place_order(
+            market_for_orders, action=Action.BUY, side=Side.YES,
+            count_fp="1", yes_price_dollars="0.01",
+        )
+        try:
+            client.portfolio.amend_order(order.order_id, count_fp="3")
+
+            after = client.portfolio.get_order(order.order_id)
+            assert float(after.data.remaining_count_fp) == pytest.approx(3.0)
+            assert float(after.data.yes_price_dollars) == pytest.approx(0.01), (
+                "amend must preserve the price when only the count changes"
+            )
+        finally:
+            client.portfolio.cancel_order(order.order_id)
+
+    def test_write_ack_does_not_blank_known_fields(self, client, market_for_orders):
+        """V2 acks carry no ticker/side/price; the Order must keep its own."""
+        order = client.portfolio.place_order(
+            market_for_orders, action=Action.BUY, side=Side.YES,
+            count_fp="1", yes_price_dollars="0.01",
+        )
+        ticker = order.ticker
+        assert ticker == market_for_orders.ticker
+
+        order.cancel()
+
+        assert order.status == OrderStatus.CANCELED
+        assert order.ticker == ticker, "cancel ack wiped the ticker"
+        assert order.data.side == Side.YES
+        assert order.data.yes_price_dollars is not None
+
+    def test_batch_place_returns_populated_orders(self, client, market_for_orders):
+        """Batch acks are as thin as single ones; results must still be usable."""
+        market = market_for_orders
+        result = client.portfolio.batch_place_orders([
+            {"ticker": market.ticker, "action": "buy", "side": "yes",
+             "count_fp": "1", "yes_price_dollars": "0.01"},
+            {"ticker": market.ticker, "action": "buy", "side": "yes",
+             "count_fp": "1", "yes_price_dollars": "0.02"},
+        ])
+        try:
+            assert len(result) == 2
+            for o in result:
+                assert o.order_id is not None
+                assert o.ticker == market.ticker, "batch ack left ticker blank"
+                assert o.data.yes_price_dollars is not None, "batch ack left price null"
+            prices = sorted(float(o.data.yes_price_dollars) for o in result)
+            assert prices == pytest.approx([0.01, 0.02])
+        finally:
+            ids = [o.order_id for o in result if o.order_id]
+            if ids:
+                client.portfolio.batch_cancel_orders(ids)
