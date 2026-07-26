@@ -2,6 +2,7 @@
 # Re-run: python scripts/generate_sync.py
 from __future__ import annotations
 
+import uuid
 from decimal import Decimal
 from typing import TYPE_CHECKING
 from urllib.parse import urlencode
@@ -19,6 +20,7 @@ from ..models import (
     OrderModel, BalanceModel, PositionModel, FillModel,
     SettlementModel, QueuePositionModel, OrderGroupModel,
     SubaccountModel, SubaccountBalanceModel, SubaccountTransferModel,
+    SubaccountNettingModel,
 )
 
 if TYPE_CHECKING:
@@ -77,7 +79,7 @@ class Portfolio:
             buy_max_cost_dollars: Maximum total cost (dollar string). Protects against slippage.
             self_trade_prevention: Behavior on self-cross (CANCEL_RESTING or CANCEL_INCOMING).
             order_group_id: Link to an order group for OCO/bracket strategies.
-            subaccount: Subaccount number (0 for primary, 1-32 for subaccounts).
+            subaccount: Subaccount number (0 for primary, 1-63 for subaccounts).
             cancel_order_on_pause: If True, cancel order if market is paused.
         """
         # Canonical form: book_side + price_dollars, both YES-denominated. The
@@ -142,7 +144,7 @@ class Portfolio:
 
         Args:
             order_id: ID of the order to cancel.
-            subaccount: Subaccount number (0 for primary, 1-32 for subaccounts).
+            subaccount: Subaccount number (0 for primary, 1-63 for subaccounts).
 
         Returns:
             The canceled Order with updated status.
@@ -182,7 +184,7 @@ class Portfolio:
                 size alone silently shrinks a partially filled order.
             yes_price_dollars: New YES price (dollar string).
             no_price_dollars: New NO price (dollar string). Converted internally.
-            subaccount: Subaccount number (0 for primary, 1-32 for subaccounts).
+            subaccount: Subaccount number (0 for primary, 1-63 for subaccounts).
             ticker: Market ticker (fetched from the order if not provided).
             book_side: ``bid``/``ask``. Preferred over action/side; fetched
                 from the order if not provided.
@@ -257,10 +259,13 @@ class Portfolio:
             "price": f"{Decimal(yes_price_dollars):.4f}",
             "count": count_fp,
         }
+        # Per the AmendOrderV2 spec, subaccount rides as a query parameter,
+        # not a body field (matching cancel/decrease).
+        endpoint = f"/portfolio/events/orders/{order_id}/amend"
         if subaccount is not None:
-            body["subaccount"] = subaccount
+            endpoint += f"?subaccount={subaccount}"
 
-        response = self._client.post(f"/portfolio/events/orders/{order_id}/amend", body)
+        response = self._client.post(endpoint, body)
         model = self._order_from_v2_ack(
             response,
             ticker=ticker,
@@ -270,16 +275,20 @@ class Portfolio:
         )
         return Order(self._client, model)
 
-    def decrease_order(self, order_id: str, reduce_by_fp: str) -> Order:
+    def decrease_order(
+        self, order_id: str, reduce_by_fp: str, *, subaccount: int | None = None
+    ) -> Order:
         """Decrease the remaining count of a resting order.
 
         Args:
             order_id: ID of the order to decrease.
             reduce_by_fp: Number of contracts to reduce by (fixed-point string).
+            subaccount: Subaccount number (0 for primary, 1-63 for subaccounts).
         """
-        response = self._client.post(
-            f"/portfolio/events/orders/{order_id}/decrease", {"reduce_by": reduce_by_fp}
-        )
+        endpoint = f"/portfolio/events/orders/{order_id}/decrease"
+        if subaccount is not None:
+            endpoint += f"?subaccount={subaccount}"
+        response = self._client.post(endpoint, {"reduce_by": reduce_by_fp})
         model = self._order_from_v2_ack(
             response,
             ticker=response.get("ticker"),
@@ -553,38 +562,80 @@ class Portfolio:
 
     # --- Subaccounts ---
 
-    def create_subaccount(self) -> SubaccountModel:
-        """Create a new numbered subaccount."""
-        response = self._client.post("/portfolio/subaccounts", {})
-        return SubaccountModel.model_validate(response.get("subaccount", response))
+    def create_subaccount(
+        self, *, exchange_index: int | None = None
+    ) -> SubaccountModel:
+        """Create a new numbered subaccount.
+
+        Requires the Advanced API tier or above; without it the API returns
+        403 ``subaccount_creation_requires_advanced_api_usage_level``.
+        Subaccounts are numbered sequentially starting from 1, with a maximum
+        of 63 numbered subaccounts (64 including the primary account 0).
+
+        Args:
+            exchange_index: Exchange shard to create the subaccount on.
+                Defaults to 0 (currently the only supported value).
+
+        Returns:
+            SubaccountModel with the assigned ``subaccount_number``.
+        """
+        body: dict = {}
+        if exchange_index is not None:
+            body["exchange_index"] = exchange_index
+        response = self._client.post("/portfolio/subaccounts", body)
+        return SubaccountModel.model_validate(response)
 
     def transfer_between_subaccounts(
         self,
-        from_subaccount_id: str,
-        to_subaccount_id: str,
-        amount_dollars: str,
-    ) -> SubaccountTransferModel:
-        """Transfer funds between subaccounts.
+        from_subaccount: int,
+        to_subaccount: int,
+        amount_cents: int,
+        *,
+        client_transfer_id: str | None = None,
+        exchange_index: int | None = None,
+    ) -> str:
+        """Transfer funds between your own subaccounts.
+
+        Transfers are idempotent on ``client_transfer_id``: retrying with the
+        same ID returns HTTP 409 instead of applying the transfer twice. Pass
+        an explicit ID when you need safe retries; otherwise a fresh UUID4 is
+        generated for each call.
 
         Args:
-            from_subaccount_id: Source subaccount ID.
-            to_subaccount_id: Destination subaccount ID.
-            amount_dollars: Amount to transfer (dollar string).
+            from_subaccount: Source subaccount number (0 for primary,
+                1-63 for numbered subaccounts).
+            to_subaccount: Destination subaccount number (0 for primary,
+                1-63 for numbered subaccounts).
+            amount_cents: Amount to transfer in cents.
+            client_transfer_id: Idempotency key (UUID string). Auto-generated
+                if not supplied.
+            exchange_index: Exchange shard to apply the transfer on.
+                Defaults to 0 (currently the only supported value).
+
+        Returns:
+            The ``client_transfer_id`` used, for idempotent retries and
+            matching against get_subaccount_transfers().
         """
-        body = {
-            "from_subaccount_id": from_subaccount_id,
-            "to_subaccount_id": to_subaccount_id,
-            "amount_dollars": amount_dollars,
+        if client_transfer_id is None:
+            client_transfer_id = str(uuid.uuid4())
+        body: dict = {
+            "client_transfer_id": client_transfer_id,
+            "from_subaccount": from_subaccount,
+            "to_subaccount": to_subaccount,
+            "amount_cents": amount_cents,
         }
-        response = self._client.post("/portfolio/subaccounts/transfer", body)
-        return SubaccountTransferModel.model_validate(response.get("transfer", response))
+        if exchange_index is not None:
+            body["exchange_index"] = exchange_index
+        # Success response body is empty per the spec.
+        self._client.post("/portfolio/subaccounts/transfer", body)
+        return client_transfer_id
 
     def get_subaccount_balances(self) -> DataFrameList[SubaccountBalanceModel]:
-        """Get balances for all subaccounts."""
+        """Get balances for all subaccounts, including the primary account (0)."""
         response = self._client.get("/portfolio/subaccounts/balances")
         return DataFrameList(
             SubaccountBalanceModel.model_validate(b)
-            for b in (response.get("balances") or [])
+            for b in (response.get("subaccount_balances") or [])
         )
 
     def get_subaccount_transfers(
@@ -595,12 +646,35 @@ class Portfolio:
         fetch_all: bool = False,
         **extra_params,
     ) -> DataFrameList[SubaccountTransferModel]:
-        """Get transfer history between subaccounts."""
+        """Get transfer history between subaccounts (paginated)."""
         params = {"limit": limit, "cursor": cursor, **extra_params}
         data = self._client.paginated_get(
             "/portfolio/subaccounts/transfers", "transfers", params, fetch_all
         )
         return DataFrameList(SubaccountTransferModel.model_validate(t) for t in data)
+
+    def get_subaccount_netting(self) -> DataFrameList[SubaccountNettingModel]:
+        """Get the netting-enabled settings for all subaccounts."""
+        response = self._client.get("/portfolio/subaccounts/netting")
+        return DataFrameList(
+            SubaccountNettingModel.model_validate(c)
+            for c in (response.get("netting_configs") or [])
+        )
+
+    def update_subaccount_netting(
+        self, subaccount_number: int, enabled: bool
+    ) -> None:
+        """Update the netting-enabled setting for a specific subaccount.
+
+        Args:
+            subaccount_number: Subaccount number (0 for primary, 1-63 for
+                subaccounts).
+            enabled: Whether netting is enabled for this subaccount.
+        """
+        self._client.put(
+            "/portfolio/subaccounts/netting",
+            {"subaccount_number": subaccount_number, "enabled": enabled},
+        )
 
     # --- Shared validation helpers ---
 

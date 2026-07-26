@@ -262,3 +262,133 @@ class TestAsyncCachedProperties:
     def test_properties_are_cached(self, async_client):
         assert async_client.portfolio is async_client.portfolio
         assert async_client.exchange is async_client.exchange
+
+
+class TestAsyncSubaccounts:
+    """Async subaccount endpoints against live-observed response shapes."""
+
+    @pytest.mark.asyncio
+    async def test_create_subaccount_parses_live_response(self, async_client):
+        # Live 201 body observed 2026-07-26: exactly {"subaccount_number": 1}.
+        async_client._session.request.return_value = _mock_response(
+            {"subaccount_number": 1}
+        )
+
+        sub = await async_client.portfolio.create_subaccount()
+
+        assert sub.subaccount_number == 1
+        call_args = async_client._session.request.call_args
+        assert call_args.args[0] == "POST"
+        assert call_args.args[1].endswith("/portfolio/subaccounts")
+        assert json.loads(call_args.kwargs["content"]) == {}
+
+    @pytest.mark.asyncio
+    async def test_get_subaccount_balances_reads_live_key(self, async_client):
+        # Live response key is `subaccount_balances`, not `balances`.
+        async_client._session.request.return_value = _mock_response({
+            "subaccount_balances": [
+                {"balance": "64876.8883", "exchange_index": 0,
+                 "subaccount_number": 0, "updated_ts": 1784701854},
+                {"balance": "0.0000", "exchange_index": 0,
+                 "subaccount_number": 1, "updated_ts": 1785052854},
+            ]
+        })
+
+        balances = await async_client.portfolio.get_subaccount_balances()
+
+        assert len(balances) == 2
+        assert balances[0].subaccount_number == 0
+        assert balances[0].balance == "64876.8883"
+        assert balances[1].subaccount_number == 1
+
+    @pytest.mark.asyncio
+    async def test_transfer_between_subaccounts_documented_schema(self, async_client):
+        async_client._session.request.return_value = _mock_response({})
+
+        transfer_id = await async_client.portfolio.transfer_between_subaccounts(
+            0, 1, 2500,
+            client_transfer_id="5f8f9c1e-2f9b-4f1a-9d0e-8f7a6b5c4d3e",
+        )
+
+        assert transfer_id == "5f8f9c1e-2f9b-4f1a-9d0e-8f7a6b5c4d3e"
+        body = json.loads(async_client._session.request.call_args.kwargs["content"])
+        assert body == {
+            "client_transfer_id": "5f8f9c1e-2f9b-4f1a-9d0e-8f7a6b5c4d3e",
+            "from_subaccount": 0,
+            "to_subaccount": 1,
+            "amount_cents": 2500,
+        }
+
+    @pytest.mark.asyncio
+    async def test_get_subaccount_transfers_documented_shape(self, async_client):
+        async_client._session.request.return_value = _mock_response({
+            "transfers": [
+                {"transfer_id": "t-1", "from_subaccount": 0, "to_subaccount": 1,
+                 "amount_cents": 2500, "created_ts": 1785052854,
+                 "exchange_index": 0},
+            ],
+            "cursor": "",
+        })
+
+        transfers = await async_client.portfolio.get_subaccount_transfers()
+
+        assert len(transfers) == 1
+        assert transfers[0].from_subaccount == 0
+        assert transfers[0].amount_cents == 2500
+
+    @pytest.mark.asyncio
+    async def test_get_subaccount_netting(self, async_client):
+        async_client._session.request.return_value = _mock_response({
+            "netting_configs": [
+                {"subaccount_number": 0, "enabled": True, "exchange_index": 0},
+            ]
+        })
+
+        configs = await async_client.portfolio.get_subaccount_netting()
+
+        assert configs[0].subaccount_number == 0
+        assert configs[0].enabled is True
+
+    @pytest.mark.asyncio
+    async def test_update_subaccount_netting(self, async_client):
+        async_client._session.request.return_value = _mock_response({})
+
+        await async_client.portfolio.update_subaccount_netting(1, False)
+
+        call_args = async_client._session.request.call_args
+        assert call_args.args[0] == "PUT"
+        assert call_args.args[1].endswith("/portfolio/subaccounts/netting")
+        assert json.loads(call_args.kwargs["content"]) == {
+            "subaccount_number": 1, "enabled": False,
+        }
+
+    @pytest.mark.asyncio
+    async def test_amend_order_subaccount_is_query_param(self, async_client):
+        async_client._session.request.return_value = _mock_response({
+            "order_id": "order-abc-123", "remaining_count": "10.00",
+            "fill_count": "0.00", "ts_ms": 1,
+        })
+
+        await async_client.portfolio.amend_order(
+            "order-abc-123", ticker="KXTEST", book_side="bid",
+            count_fp="10.00", yes_price_dollars="0.55", subaccount=2,
+        )
+
+        call_args = async_client._session.request.call_args
+        assert "/amend?subaccount=2" in call_args.args[1]
+        assert "subaccount" not in json.loads(call_args.kwargs["content"])
+
+    @pytest.mark.asyncio
+    async def test_decrease_order_subaccount_is_query_param(self, async_client):
+        async_client._session.request.return_value = _mock_response({
+            "order_id": "order-abc-123", "remaining_count": "5.00",
+            "fill_count": "0.00", "ts_ms": 1,
+        })
+
+        await async_client.portfolio.decrease_order(
+            "order-abc-123", "5.00", subaccount=3
+        )
+
+        call_args = async_client._session.request.call_args
+        assert "/decrease?subaccount=3" in call_args.args[1]
+        assert json.loads(call_args.kwargs["content"]) == {"reduce_by": "5.00"}

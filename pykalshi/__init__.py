@@ -68,6 +68,7 @@ from .models import (
     SubaccountModel,
     SubaccountBalanceModel,
     SubaccountTransferModel,
+    SubaccountNettingModel,
     ForecastPercentileHistory,
     MveSelectedLeg,
     MveCollectionModel,
@@ -188,6 +189,7 @@ __all__ = [
     "SubaccountModel",
     "SubaccountBalanceModel",
     "SubaccountTransferModel",
+    "SubaccountNettingModel",
     # Exceptions
     "KalshiError",
     "KalshiAPIError",
