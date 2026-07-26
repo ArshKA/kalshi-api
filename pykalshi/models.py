@@ -781,20 +781,26 @@ class OrderGroupModel(BaseModel):
 # --- Subaccount Models ---
 
 class SubaccountModel(BaseModel):
-    """Subaccount info."""
-    subaccount_id: str
-    subaccount_number: int
-    created_time: str | None = None
+    """Subaccount info (CreateSubaccountResponse)."""
+    subaccount_number: int  # 1-63; 0 is the primary account
 
     model_config = ConfigDict(extra="ignore")
 
 
 class SubaccountBalanceModel(BaseModel):
-    """Balance for a single subaccount."""
-    subaccount_id: str
-    balance_dollars: str
-    portfolio_value_dollars: str | None = None
+    """Balance for a single subaccount.
 
+    ``balance`` is a fixed-point dollar string (e.g. ``"64876.8883"``).
+    The settlement-advance fields are only present for accounts using that
+    feature, so they are optional here.
+    """
+    subaccount_number: int  # 0 for primary, 1-63 for subaccounts
+    balance: str  # fixed-point dollar string
+    exchange_index: int = 0
+    updated_ts: int | None = None  # Unix timestamp of last balance update
+    voluntarily_locked: bool | None = None
+    settlement_advance: str | None = None  # fixed-point dollar string
+    settlement_advance_state: str | None = None
 
     model_config = ConfigDict(extra="ignore")
 
@@ -802,11 +808,20 @@ class SubaccountBalanceModel(BaseModel):
 class SubaccountTransferModel(BaseModel):
     """Record of a transfer between subaccounts."""
     transfer_id: str
-    from_subaccount_id: str
-    to_subaccount_id: str
-    amount_dollars: str
-    created_time: str | None = None
+    from_subaccount: int  # 0 for primary, 1-63 for subaccounts
+    to_subaccount: int  # 0 for primary, 1-63 for subaccounts
+    amount_cents: int
+    created_ts: int | None = None  # Unix timestamp
+    exchange_index: int = 0
 
+    model_config = ConfigDict(extra="ignore")
+
+
+class SubaccountNettingModel(BaseModel):
+    """Netting-enabled setting for a single subaccount."""
+    subaccount_number: int  # 0 for primary, 1-63 for subaccounts
+    enabled: bool
+    exchange_index: int = 0
 
     model_config = ConfigDict(extra="ignore")
 

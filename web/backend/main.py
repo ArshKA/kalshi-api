@@ -403,9 +403,12 @@ def create_subaccount():
 
 
 @app.post("/api/portfolio/subaccounts/transfer")
-def transfer_between_subaccounts(from_id: str, to_id: str, amount: int):
-    """Transfer funds between subaccounts."""
-    return get_client().portfolio.transfer_between_subaccounts(from_id, to_id, amount).model_dump()
+def transfer_between_subaccounts(from_subaccount: int, to_subaccount: int, amount_cents: int):
+    """Transfer funds between subaccounts (amounts in cents)."""
+    transfer_id = get_client().portfolio.transfer_between_subaccounts(
+        from_subaccount, to_subaccount, amount_cents
+    )
+    return {"client_transfer_id": transfer_id}
 
 @app.get("/api/markets/{ticker}/orderbook", response_model=OrderbookResponse)
 def get_market_orderbook(ticker: str):

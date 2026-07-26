@@ -762,3 +762,209 @@ def test_order_cancel_preserves_known_fields(client, mock_response):
     assert order.data.action == Action.BUY        # preserved
     assert order.data.side == Side.YES            # preserved
     assert order.data.yes_price_dollars == "0.55" # preserved
+
+
+# --- Subaccounts ---
+#
+# Fixture JSON mirrors responses observed against the live production API
+# (2026-07-26) plus the current docs.kalshi.com OpenAPI schemas. Where the two
+# disagree (e.g. the balances schema marks settlement-advance fields required
+# but the live API omits them), the models accept both.
+
+LIVE_SUBACCOUNT_BALANCES = {
+    "subaccount_balances": [
+        {"balance": "64876.8883", "exchange_index": 0,
+         "subaccount_number": 0, "updated_ts": 1784701854},
+        {"balance": "0.0000", "exchange_index": 0,
+         "subaccount_number": 1, "updated_ts": 1785052854},
+    ]
+}
+
+
+def test_create_subaccount_parses_live_response(client, mock_response):
+    """Live 201 body is exactly {"subaccount_number": N} -- no wrapper, no id."""
+    client._session.request.return_value = mock_response({"subaccount_number": 1})
+
+    sub = client.portfolio.create_subaccount()
+
+    assert sub.subaccount_number == 1
+    call_args = client._session.request.call_args
+    assert call_args.args[0] == "POST"
+    assert call_args.args[1].endswith("/portfolio/subaccounts")
+    assert json.loads(call_args.kwargs["content"]) == {}
+
+
+def test_create_subaccount_sends_exchange_index(client, mock_response):
+    client._session.request.return_value = mock_response({"subaccount_number": 2})
+
+    client.portfolio.create_subaccount(exchange_index=0)
+
+    body = json.loads(client._session.request.call_args.kwargs["content"])
+    assert body == {"exchange_index": 0}
+
+
+def test_get_subaccount_balances_reads_live_key(client, mock_response):
+    """The response key is `subaccount_balances`, not `balances`."""
+    client._session.request.return_value = mock_response(LIVE_SUBACCOUNT_BALANCES)
+
+    balances = client.portfolio.get_subaccount_balances()
+
+    assert len(balances) == 2
+    assert balances[0].subaccount_number == 0
+    assert balances[0].balance == "64876.8883"
+    assert balances[0].exchange_index == 0
+    assert balances[0].updated_ts == 1784701854
+    assert balances[1].subaccount_number == 1
+    assert balances[1].balance == "0.0000"
+
+    call_url = client._session.request.call_args.args[1]
+    assert call_url.endswith("/portfolio/subaccounts/balances")
+
+
+def test_get_subaccount_balances_accepts_settlement_advance_fields(client, mock_response):
+    """Docs mark these required; live omits them. Accept both."""
+    client._session.request.return_value = mock_response({
+        "subaccount_balances": [
+            {"balance": "10.0000", "exchange_index": 0, "subaccount_number": 3,
+             "updated_ts": 1784701854, "voluntarily_locked": True,
+             "settlement_advance": "0.0000",
+             "settlement_advance_state": "b2f9cb52-8ef5-4d37-a389-4d97cbf8ac09"},
+        ]
+    })
+
+    balances = client.portfolio.get_subaccount_balances()
+
+    assert balances[0].voluntarily_locked is True
+    assert balances[0].settlement_advance == "0.0000"
+
+
+def test_transfer_between_subaccounts_sends_documented_schema(client, mock_response):
+    """ApplySubaccountTransferRequest: client_transfer_id + int subaccount
+    numbers + amount_cents. The old {from,to}_subaccount_id / amount_dollars
+    body never matched the live API."""
+    client._session.request.return_value = mock_response({})
+
+    transfer_id = client.portfolio.transfer_between_subaccounts(
+        0, 1, 2500,
+        client_transfer_id="5f8f9c1e-2f9b-4f1a-9d0e-8f7a6b5c4d3e",
+    )
+
+    assert transfer_id == "5f8f9c1e-2f9b-4f1a-9d0e-8f7a6b5c4d3e"
+    call_args = client._session.request.call_args
+    assert call_args.args[0] == "POST"
+    assert call_args.args[1].endswith("/portfolio/subaccounts/transfer")
+    body = json.loads(call_args.kwargs["content"])
+    assert body == {
+        "client_transfer_id": "5f8f9c1e-2f9b-4f1a-9d0e-8f7a6b5c4d3e",
+        "from_subaccount": 0,
+        "to_subaccount": 1,
+        "amount_cents": 2500,
+    }
+    assert isinstance(body["from_subaccount"], int)
+    assert isinstance(body["amount_cents"], int)
+
+
+def test_transfer_between_subaccounts_generates_uuid(client, mock_response):
+    """Without an explicit client_transfer_id a fresh UUID4 is generated and
+    returned so callers can retry idempotently (retry -> HTTP 409)."""
+    import uuid as _uuid
+
+    client._session.request.return_value = mock_response({})
+
+    transfer_id = client.portfolio.transfer_between_subaccounts(1, 0, 100)
+
+    body = json.loads(client._session.request.call_args.kwargs["content"])
+    assert body["client_transfer_id"] == transfer_id
+    assert _uuid.UUID(transfer_id).version == 4
+
+
+def test_transfer_between_subaccounts_sends_exchange_index(client, mock_response):
+    client._session.request.return_value = mock_response({})
+
+    client.portfolio.transfer_between_subaccounts(0, 1, 100, exchange_index=0)
+
+    body = json.loads(client._session.request.call_args.kwargs["content"])
+    assert body["exchange_index"] == 0
+
+
+def test_get_subaccount_transfers_parses_documented_shape(client, mock_response):
+    """SubaccountTransfer: int subaccount numbers, amount_cents, created_ts."""
+    client._session.request.return_value = mock_response({
+        "transfers": [
+            {"transfer_id": "t-1", "from_subaccount": 0, "to_subaccount": 1,
+             "amount_cents": 2500, "created_ts": 1785052854, "exchange_index": 0},
+        ],
+        "cursor": "",
+    })
+
+    transfers = client.portfolio.get_subaccount_transfers()
+
+    assert len(transfers) == 1
+    t = transfers[0]
+    assert t.transfer_id == "t-1"
+    assert t.from_subaccount == 0
+    assert t.to_subaccount == 1
+    assert t.amount_cents == 2500
+    assert t.created_ts == 1785052854
+
+    call_url = client._session.request.call_args.args[1]
+    assert "/portfolio/subaccounts/transfers" in call_url
+
+
+def test_get_subaccount_netting(client, mock_response):
+    client._session.request.return_value = mock_response({
+        "netting_configs": [
+            {"subaccount_number": 0, "enabled": True, "exchange_index": 0},
+            {"subaccount_number": 1, "enabled": False, "exchange_index": 0},
+        ]
+    })
+
+    configs = client.portfolio.get_subaccount_netting()
+
+    assert len(configs) == 2
+    assert configs[0].subaccount_number == 0
+    assert configs[0].enabled is True
+    assert configs[1].enabled is False
+
+    call_url = client._session.request.call_args.args[1]
+    assert call_url.endswith("/portfolio/subaccounts/netting")
+
+
+def test_update_subaccount_netting(client, mock_response):
+    client._session.request.return_value = mock_response({})
+
+    client.portfolio.update_subaccount_netting(1, True)
+
+    call_args = client._session.request.call_args
+    assert call_args.args[0] == "PUT"
+    assert call_args.args[1].endswith("/portfolio/subaccounts/netting")
+    assert json.loads(call_args.kwargs["content"]) == {
+        "subaccount_number": 1, "enabled": True,
+    }
+
+
+def test_amend_order_subaccount_is_query_param(client, mock_response):
+    """AmendOrderV2 takes subaccount as a query parameter; the request body
+    schema has no subaccount field."""
+    client._session.request.return_value = mock_response(_create_ack())
+
+    client.portfolio.amend_order(
+        "order-abc-123", ticker="KXTEST", book_side="bid",
+        count_fp="10.00", yes_price_dollars="0.55", subaccount=2,
+    )
+
+    call_args = client._session.request.call_args
+    assert "/portfolio/events/orders/order-abc-123/amend?subaccount=2" in call_args.args[1]
+    body = json.loads(call_args.kwargs["content"])
+    assert "subaccount" not in body
+
+
+def test_decrease_order_subaccount_is_query_param(client, mock_response):
+    client._session.request.return_value = mock_response(_create_ack())
+
+    client.portfolio.decrease_order("order-abc-123", "5.00", subaccount=3)
+
+    call_args = client._session.request.call_args
+    assert "/portfolio/events/orders/order-abc-123/decrease?subaccount=3" in call_args.args[1]
+    body = json.loads(call_args.kwargs["content"])
+    assert body == {"reduce_by": "5.00"}
