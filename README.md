@@ -94,9 +94,15 @@ print(f"${balance.balance / 100:.2f} available")
 order = client.portfolio.place_order(market, Action.BUY, Side.YES, count_fp="10", yes_price_dollars="0.50")
 
 # Manage orders
-order.wait_until_terminal()  # Block until filled/canceled
-order.modify(yes_price=45)   # Amend price
-order.cancel()               # Cancel
+order.wait_until_terminal()                    # Block until filled/canceled
+order.amend(yes_price_dollars="0.45")          # Amend price
+order.decrease(reduce_by_fp="5")               # Shrink the resting size
+order.cancel()                                 # Cancel
+
+# Buying NO is the same as selling YES. Orders rest on a single
+# YES-denominated book, so a buy of NO at 0.01 reads back as a sell
+# of YES at 0.99 -- the same resting order, quoted from the YES side.
+order = client.portfolio.place_order(market, Action.BUY, Side.NO, count_fp="10", no_price_dollars="0.01")
 
 # View portfolio
 positions = client.portfolio.get_positions()
