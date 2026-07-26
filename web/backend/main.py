@@ -491,7 +491,7 @@ def get_market_trades(ticker: str, limit: int = 20):
 
 # WebSocket URLs (must match feed.py)
 WS_PROD_URL = "wss://api.elections.kalshi.com/trade-api/ws/v2"
-WS_DEMO_URL = "wss://demo-api.kalshi.co/trade-api/ws/v2"
+WS_DEMO_URL = "wss://external-api-ws.demo.kalshi.co/trade-api/ws/v2"
 WS_SIGN_PATH = "/trade-api/ws/v2"
 
 

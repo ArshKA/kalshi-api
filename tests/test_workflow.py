@@ -20,7 +20,7 @@ def test_user_balance_workflow(client, mock_response):
     # Verify endpoint called
     client._session.request.assert_called_with(
         "GET",
-        "https://demo-api.kalshi.co/trade-api/v2/portfolio/balance",
+        "https://external-api.demo.kalshi.co/trade-api/v2/portfolio/balance",
         headers=ANY,
         timeout=ANY,
     )

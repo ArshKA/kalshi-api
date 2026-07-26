@@ -20,7 +20,7 @@ class TestExchangeStatus:
         assert status.trading_active is True
         client._session.request.assert_called_with(
             "GET",
-            "https://demo-api.kalshi.co/trade-api/v2/exchange/status",
+            "https://external-api.demo.kalshi.co/trade-api/v2/exchange/status",
             headers=ANY,
             timeout=ANY,
         )
@@ -76,7 +76,7 @@ class TestExchangeSchedule:
         assert len(schedule["standard_hours"]) == 1
         client._session.request.assert_called_with(
             "GET",
-            "https://demo-api.kalshi.co/trade-api/v2/exchange/schedule",
+            "https://external-api.demo.kalshi.co/trade-api/v2/exchange/schedule",
             headers=ANY,
             timeout=ANY,
         )
@@ -104,7 +104,7 @@ class TestUserDataTimestamp:
         assert ts == 1704067200000
         client._session.request.assert_called_with(
             "GET",
-            "https://demo-api.kalshi.co/trade-api/v2/exchange/user_data_timestamp",
+            "https://external-api.demo.kalshi.co/trade-api/v2/exchange/user_data_timestamp",
             headers=ANY,
             timeout=ANY,
         )

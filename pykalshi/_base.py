@@ -28,7 +28,7 @@ from .exceptions import (
 logger = logging.getLogger(__name__)
 
 DEFAULT_API_BASE = "https://api.elections.kalshi.com/trade-api/v2"
-DEMO_API_BASE = "https://demo-api.kalshi.co/trade-api/v2"
+DEMO_API_BASE = "https://external-api.demo.kalshi.co/trade-api/v2"
 
 _RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 
