@@ -136,15 +136,13 @@ def get_balance_short():
 
 @app.get("/api/exchange/status")
 def get_exchange_status():
-    """Get exchange operational status, schedule, and announcements."""
+    """Get exchange operational status and schedule."""
     c = get_client()
     status = c.exchange.get_status()
     schedule = c.exchange.get_schedule()
-    announcements = c.exchange.get_announcements()
     return {
         "status": status.model_dump(),
         "schedule": schedule,
-        "announcements": [a.model_dump() for a in announcements],
     }
 
 @app.get("/api/markets", response_model=List[MarketModel])

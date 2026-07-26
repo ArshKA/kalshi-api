@@ -5,7 +5,6 @@ from pykalshi.models import (
     MarketModel,
     FillModel,
     ExchangeStatus,
-    Announcement,
     APILimits,
     RateLimitTier,
     APIKey,
@@ -87,32 +86,6 @@ def test_exchange_status_model():
     assert model.exchange_active is True
     assert model.trading_active is False
 
-
-def test_announcement_model():
-    """Test Announcement model validation."""
-    data = {
-        "id": "ann-001",
-        "title": "Test Announcement",
-        "body": "This is a test.",
-        "type": "info",
-        "created_time": "2024-01-01T12:00:00Z",
-    }
-    model = Announcement.model_validate(data)
-    assert model.id == "ann-001"
-    assert model.title == "Test Announcement"
-    assert model.type == "info"
-
-
-def test_announcement_model_minimal():
-    """Test Announcement with only required fields."""
-    data = {"title": "Minimal Announcement"}
-    model = Announcement.model_validate(data)
-    assert model.title == "Minimal Announcement"
-    assert model.id is None
-    assert model.body is None
-
-
-# --- Account Models ---
 
 def test_rate_limit_tier_model():
     """Test RateLimitTier model validation."""

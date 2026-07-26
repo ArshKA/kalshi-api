@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from ..models import ExchangeStatus, Announcement
+from ..models import ExchangeStatus
 from ..exceptions import KalshiAPIError
 
 if TYPE_CHECKING:
@@ -10,7 +10,7 @@ if TYPE_CHECKING:
 
 
 class AsyncExchange:
-    """Exchange status, schedule, and announcements."""
+    """Exchange status and schedule."""
 
     def __init__(self, client: AsyncKalshiClient) -> None:
         self._client = client
@@ -35,11 +35,6 @@ class AsyncExchange:
         """Get exchange trading schedule (raw format)."""
         data = await self._client.get("/exchange/schedule")
         return data.get("schedule", {})
-
-    async def get_announcements(self) -> list[Announcement]:
-        """Get exchange-wide announcements."""
-        data = await self._client.get("/exchange/announcements")
-        return [Announcement.model_validate(a) for a in (data.get("announcements") or [])]
 
     async def get_user_data_timestamp(self) -> int:
         """Get timestamp of last user data validation (Unix ms)."""

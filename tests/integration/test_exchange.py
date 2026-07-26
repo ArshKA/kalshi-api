@@ -26,12 +26,6 @@ class TestExchangeStatus:
         assert isinstance(schedule, dict)
         assert "maintenance_windows" in schedule or "standard_hours" in schedule
 
-    def test_get_announcements(self, client):
-        """Exchange announcements returns list."""
-        announcements = client.exchange.get_announcements()
-
-        assert isinstance(announcements, list)
-
     def test_get_user_data_timestamp(self, client):
         """User data timestamp returns integer or None."""
         ts = client.exchange.get_user_data_timestamp()

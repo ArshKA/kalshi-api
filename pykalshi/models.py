@@ -464,23 +464,6 @@ class ExchangeStatus(BaseModel):
         return exchange_status_html(self)
 
 
-class Announcement(BaseModel):
-    """Exchange announcement."""
-    id: str | None = None
-    title: str
-    body: str | None = None
-    type: str | None = None
-    created_time: str | None = None
-    delivery_time: str | None = None
-    status: str | None = None
-
-    model_config = ConfigDict(extra="ignore")
-
-    def _repr_html_(self) -> str:
-        from ._repr import announcement_html
-        return announcement_html(self)
-
-
 # --- Account Models ---
 
 class RateLimitTier(BaseModel):
