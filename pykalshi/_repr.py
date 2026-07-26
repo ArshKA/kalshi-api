@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     from .events import Event
     from .models import (
         BalanceModel, PositionModel, FillModel, OrderbookResponse,
-        SettlementModel, TradeModel, ExchangeStatus, Announcement,
+        SettlementModel, TradeModel, ExchangeStatus,
         APILimits, APIKey, QueuePositionModel, OrderGroupModel,
     )
 
@@ -467,24 +467,6 @@ def exchange_status_html(e: ExchangeStatus) -> str:
         _row("Exchange", exchange_pill),
         _row("Trading", trading_pill),
     ]
-    return _wrap(f"<table>{''.join(rows)}</table>")
-
-
-def announcement_html(a: Announcement) -> str:
-    rows = [
-        _row("Title", f"<strong>{escape(a.title)}</strong>"),
-    ]
-
-    if a.body:
-        body = a.body[:200] + "..." if len(a.body) > 200 else a.body
-        rows.append(_row("Body", f'<span class="d">{escape(body)}</span>'))
-
-    if a.type:
-        rows.append(_row("Type", f'<span class="pill pill-gray">{escape(a.type)}</span>'))
-
-    if a.delivery_time:
-        rows.append(_row("Time", _format_time(a.delivery_time)))
-
     return _wrap(f"<table>{''.join(rows)}</table>")
 
 
