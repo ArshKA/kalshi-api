@@ -23,6 +23,22 @@ from __future__ import annotations
 #   Trades  -- `taker_side` maps 1:1 onto `taker_outcome_side`.
 #
 # Applying the order rule to a fill silently inverts every `sell` row.
+#
+# This is not a quirk of one account. Kalshi's own changelog says so, in the
+# 2025-09-22 entry that introduced `purchased_side`: it describes "the fills
+# WebSocket and REST endpoints, which have different conventions for the
+# interpretation 'side' and 'user_action'". `outcome_side` is consistent
+# across surfaces precisely because the legacy `side` is not -- on a fill it
+# already denotes the outcome, so outcome_side == side there, while on an
+# order it denotes the leg being transacted and must be combined with
+# `action`. The published equivalence table describes the ORDER reading.
+#
+# Deprecation status (checked 2026-07-25): the changelog entry "Normalized
+# outcome_side and book_side on Order, Fill, and Trade responses" marks
+# `action`, `side`, `is_yes`, `purchased_side` and `taker_side` deprecated,
+# with removal "not before May 28, 2026" -- a floor that has now passed. The
+# legacy paths below are therefore transitional only; nothing in this library
+# should require them.
 
 _ORDER_LEGACY_TO_BOOK_SIDE = {
     ("buy", "yes"): "bid",

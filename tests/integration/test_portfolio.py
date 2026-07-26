@@ -259,14 +259,15 @@ class TestOrderMutations:
             yes_price_dollars="0.01",
         )
 
-        # Amend to $0.02
+        # Amend to $0.02, addressed the canonical way. action/side are
+        # deprecated and past their stated removal floor, so a test that
+        # depends on them is testing a path that is scheduled to disappear.
         amended = client.portfolio.amend_order(
             order_id=order.order_id,
             count_fp="1",
             yes_price_dollars="0.02",
             ticker=order.ticker,
-            action=order.action,
-            side=order.side,
+            book_side=order.book_side,
         )
 
         # Verify amendment succeeded
