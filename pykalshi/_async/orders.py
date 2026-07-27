@@ -95,6 +95,29 @@ class AsyncOrder:
     def created_time(self) -> str | None:
         return self.data.created_time
 
+    @property
+    def average_fill_price_dollars(self) -> str | None:
+        """Realised price of the fill this write ack reported, if any.
+
+        Set from the create/amend ack only -- the read endpoints do not send it.
+        """
+        return self.data.average_fill_price_dollars
+
+    @property
+    def average_fee_paid_dollars(self) -> str | None:
+        """Volume-weighted fee **per contract** on the fill this ack reported.
+
+        Per the V2 spec this is an average per contract, not the total charged:
+        multiply by fill_count_fp for the total. Present only when
+        fill_count > 0.
+        """
+        return self.data.average_fee_paid_dollars
+
+    @property
+    def reduced_by_fp(self) -> str | None:
+        """Contracts a cancel actually pulled off the book, if this came from one."""
+        return self.data.reduced_by_fp
+
     # --- Domain logic ---
 
     def _merge(self, updated: OrderModel) -> None:

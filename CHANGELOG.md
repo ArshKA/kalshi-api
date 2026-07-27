@@ -40,6 +40,21 @@
   `**extra_params` for forward compatibility.
 ### Fixed
 
+- **`batch_cancel_orders` reported every canceled order as `resting`.** A
+  batch-cancel receipt carries no counts (`BatchCancelOrdersV2Response` items
+  are `{order_id, reduced_by, ts_ms}`), so the count-derived status inferred
+  `resting` — the opposite of what happened, on the path used to pull every
+  resting order at once, and `resting` is not in `TERMINAL_STATUSES`. Receipts
+  now report `canceled`.
+- **Batch items the API rejects are no longer dropped in silence.** A batch of
+  N can come back with M < N usable entries and the rest carrying
+  `{"error": {...}}`; those are now logged at WARNING (naming the order id or
+  ticker that produced them) and the shorter result is documented on both
+  batch methods. Rejection is detected on the `error` key rather than a
+  missing `order_id`, because the two legs differ: batch **create** omits
+  `order_id` on failure, but batch **cancel** requires it on every item
+  including failures — keying on `order_id` would let a failed cancel through
+  and stamp it `canceled`, reporting a still-resting order as gone.
 - **Integration tests no longer race each other on the shared demo account.**
   The suite mutates real orders on one demo account with no per-run
   namespace, and the workflow had nothing serialising concurrent runs. When
@@ -69,6 +84,14 @@
   `refill_rate` and emitting a `DeprecationWarning`.
 ### Added
 
+- **`average_fill_price_dollars` / `average_fee_paid_dollars` on `Order`** —
+  carried by the V2 create/amend ack (single and batch) and previously
+  discarded. This is the only place a caller sees what an order actually paid
+  without a separate `/portfolio/fills` round-trip. Both are volume-weighted
+  averages **per contract**, present only when `fill_count > 0`; multiply by
+  `fill_count_fp` for totals.
+- **`reduced_by_fp` on `Order`** — the contracts a cancel actually pulled off
+  the book, from the cancel and batch-cancel receipts.
 - **`MarketModel.price_ranges`** (new exported `PriceRange` model:
   `{start, end, step}` fixed-point dollar strings, plus `*_decimal`
   accessors) — Kalshi's canonical tick definition for a market. The field is
