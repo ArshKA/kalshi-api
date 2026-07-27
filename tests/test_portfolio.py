@@ -5,7 +5,7 @@ from decimal import Decimal
 import json
 import pytest
 from unittest.mock import ANY
-from pykalshi.enums import Action, Side, OrderStatus, PositionCountFilter
+from pykalshi.enums import Action, Side, OrderStatus, PositionCountFilter, TimeInForce
 from pykalshi.portfolio import Portfolio
 
 
@@ -625,6 +625,25 @@ def test_place_order_fully_filled_ack_is_executed(client, mock_response):
     assert order.status == OrderStatus.EXECUTED
 
 
+def test_place_order_zero_fill_ack_is_canceled(client, mock_response):
+    """An ack with no fills and nothing resting is a canceled order.
+
+    This is what an unfilled IOC/FOK ack looks like (verified on demo:
+    fill 0.00 / remaining 0.00, and GET on the order returns `canceled`).
+    Reporting it EXECUTED tells the caller a position exists that doesn't.
+    """
+    client._session.request.return_value = mock_response(
+        _create_ack(remaining="0.00", fill="0.00")
+    )
+
+    order = client.portfolio.place_order(
+        "KXTEST", Action.BUY, Side.YES, count_fp="10.00", yes_price_dollars="0.55",
+        time_in_force=TimeInForce.IOC,
+    )
+
+    assert order.status == OrderStatus.CANCELED
+
+
 def test_get_orders_uses_v1_read_path(client, mock_response):
     """Listing orders was NOT migrated; /portfolio/events/orders 404s."""
     client._session.request.return_value = mock_response({"orders": [], "cursor": ""})
@@ -680,6 +699,19 @@ def test_batch_place_orders_converts_to_v2_items(client, mock_response):
     assert orders[1].data.yes_price_dollars == "0.5500"
     assert orders[0].data.side == Side.YES
     assert orders[1].data.side == Side.NO
+
+
+def test_batch_item_rejects_both_count_spellings(client):
+    """count_fp and count together must raise, not race via item.update().
+
+    Previously the short-circuiting `or` popped only count_fp, and the
+    leftover `count` key silently overwrote the chosen value on the wire.
+    """
+    with pytest.raises(ValueError, match="count_fp or count, not both"):
+        client.portfolio.batch_place_orders([{
+            "ticker": "KXTEST", "action": "buy", "side": "yes",
+            "yes_price_dollars": "0.50", "count_fp": "10", "count": "99",
+        }])
 
 
 def test_batch_place_orders_matches_acks_by_client_order_id(client, mock_response):

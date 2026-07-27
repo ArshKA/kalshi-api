@@ -743,13 +743,34 @@ class AsyncPortfolio:
 
     @staticmethod
     def _v2_status_from_ack(response: dict) -> OrderStatus:
-        remaining = response.get("remaining_count")
-        try:
-            if remaining is not None and Decimal(str(remaining)) <= 0:
-                return OrderStatus.EXECUTED
-        except (ArithmeticError, ValueError):
-            pass
-        return OrderStatus.RESTING
+        """Infer status from a V2 write ack, which carries only counts.
+
+        remaining > 0 means the order rests. remaining <= 0 with fills means
+        it executed. remaining <= 0 with NO fills cannot be an execution --
+        nothing rests and nothing traded -- it is what an unfilled IOC/FOK
+        ack looks like, and the exchange reports such orders as canceled
+        (verified on demo: a zero-fill IOC ack reads fill 0.00 /
+        remaining 0.00 while GET on the same order returns `canceled`).
+
+        A partially filled IOC (fill > 0, remaining 0) is reported EXECUTED;
+        the ack alone cannot distinguish it from a complete fill.
+        """
+        def _num(key: str) -> Decimal | None:
+            raw = response.get(key)
+            if raw is None:
+                return None
+            try:
+                return Decimal(str(raw))
+            except (ArithmeticError, ValueError):
+                return None
+
+        remaining = _num("remaining_count")
+        if remaining is None or remaining > 0:
+            return OrderStatus.RESTING
+        filled = _num("fill_count")
+        if filled is not None and filled <= 0:
+            return OrderStatus.CANCELED
+        return OrderStatus.EXECUTED
 
     @staticmethod
     def _order_from_v2_ack(
@@ -1012,10 +1033,18 @@ class AsyncPortfolio:
             # "type" is not part of the V2 request shape
             o.pop("type", None)
 
+            # Pop both count spellings up front: a short-circuiting `or` would
+            # leave the loser in `o`, and item.update(o) below would silently
+            # overwrite the count actually chosen.
+            count_fp = o.pop("count_fp", None)
+            count = o.pop("count", None)
+            if count_fp is not None and count is not None:
+                raise ValueError("Batch item: specify count_fp or count, not both")
+
             item: dict = {
                 "ticker": o.pop("ticker"),
                 "side": AsyncPortfolio._v2_book_side(o.pop("action", None), o.pop("side", None)),
-                "count": o.pop("count_fp", None) or o.pop("count", None),
+                "count": count_fp if count_fp is not None else count,
                 "price": f"{yes_price:.4f}",
             }
             item.setdefault("time_in_force", TimeInForce.GTC.value)
