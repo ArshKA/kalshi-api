@@ -1,5 +1,35 @@
 # Changelog
 
+## Unreleased
+
+### Breaking changes
+
+- **`buy_max_cost_dollars` now raises `ValueError`** (on `place_order` and on
+  batch items). It was removed with the v1 order API; the V2 endpoint accepts
+  the field and ignores it, so passing it bought no slippage protection while
+  reading as though it did. Verified on demo: an order carrying
+  `buy_max_cost_dollars: "0.0001"` filled 1 contract at $0.57 (fee $0.0172).
+
+### Fixed
+
+- **`batch_cancel_orders` reported every canceled order as `resting`.** A
+  batch-cancel receipt carries no counts, so the count-derived status inferred
+  `resting` — the opposite of what happened, on the path used to pull every
+  resting order at once. Receipts now report `canceled`.
+- **Batch items the API rejects are no longer dropped in silence.** A batch of
+  N can come back with M < N orders and the rest as `{"error": {...}}`; those
+  entries are now logged at WARNING (with the request that produced them) and
+  the shorter result is documented on both batch methods.
+
+### Added
+
+- **`average_fill_price_dollars` / `average_fee_paid_dollars` on `Order`** —
+  carried by the V2 create/amend ack and previously discarded. This is the only
+  place a caller sees what an order actually paid without a separate
+  `/portfolio/fills` round-trip.
+- **`reduced_by_fp` on `Order`** — the contracts a cancel actually pulled off
+  the book, from the cancel and batch-cancel receipts.
+
 ## 2.0.0 — 2026-07-26
 
 Major release: migration to Kalshi's V2 order endpoints and canonical

@@ -748,6 +748,118 @@ def test_batch_cancel_orders_parses_ack_items(client, mock_response):
     assert call_args.args[1].endswith("/portfolio/events/orders/batched")
 
 
+def test_batch_cancel_orders_report_canceled_not_resting(client, mock_response):
+    """A batch-cancel receipt carries no counts, so the count-derived status
+    inferred `resting` -- the exact opposite of what happened, on the path a
+    kill-switch uses to pull every order at once."""
+    client._session.request.return_value = mock_response(
+        {"orders": [
+            {"order_id": "o1", "reduced_by": "10.00", "ts_ms": 1},
+            {"order_id": "o2", "reduced_by": "5.00", "ts_ms": 2},
+        ]}
+    )
+
+    orders = client.portfolio.batch_cancel_orders(["o1", "o2"])
+
+    assert [o.status for o in orders] == [OrderStatus.CANCELED, OrderStatus.CANCELED]
+    # reduced_by is the receipt's only payload: how much actually came off.
+    assert [o.reduced_by_fp for o in orders] == ["10.00", "5.00"]
+
+
+def test_batch_place_orders_warns_about_rejected_items(client, mock_response, caplog):
+    """The API rejects batch items individually. A rejected item has no
+    order_id and cannot become an Order, so it used to vanish -- 2 orders in,
+    1 Order out, no exception and no log line."""
+    client._session.request.return_value = mock_response({"orders": [
+        {"order_id": "o1", "fill_count": "0.00", "remaining_count": "1.00", "ts_ms": 1},
+        {"error": {"code": "market_not_found", "message": "market not found"},
+         "ts_ms": None},
+    ]})
+
+    with caplog.at_level("WARNING", logger="pykalshi._sync.portfolio"):
+        orders = client.portfolio.batch_place_orders([
+            {"ticker": "KXREAL", "action": "buy", "side": "yes",
+             "count_fp": "1.00", "yes_price_dollars": "0.01"},
+            {"ticker": "KXGONE", "action": "buy", "side": "yes",
+             "count_fp": "1.00", "yes_price_dollars": "0.01"},
+        ])
+
+    assert [o.order_id for o in orders] == ["o1"]
+    assert "KXGONE" in caplog.text
+    assert "market_not_found" in caplog.text
+
+
+def test_batch_cancel_orders_warns_about_rejected_items(client, mock_response, caplog):
+    """Same silence on the cancel leg: an order that did not cancel simply
+    disappeared from the result."""
+    client._session.request.return_value = mock_response({"orders": [
+        {"order_id": "o1", "reduced_by": "1.00", "ts_ms": 1},
+        {"error": {"code": "not_found", "message": "not found"}, "ts_ms": None},
+    ]})
+
+    with caplog.at_level("WARNING", logger="pykalshi._sync.portfolio"):
+        orders = client.portfolio.batch_cancel_orders(["o1", "o2"])
+
+    assert [o.order_id for o in orders] == ["o1"]
+    assert "o2" in caplog.text
+    assert "not_found" in caplog.text
+
+
+def test_place_order_refuses_buy_max_cost_dollars(client, mock_response):
+    """The V2 endpoint accepts buy_max_cost_dollars and ignores it. Verified on
+    demo: an order carrying "0.0001" filled 1 contract at $0.57. Accepting it
+    would hand the caller a slippage ceiling that does not exist."""
+    client._session.request.return_value = mock_response(_create_ack())
+
+    with pytest.raises(ValueError, match="buy_max_cost_dollars"):
+        client.portfolio.place_order(
+            "KXTEST", Action.BUY, Side.YES, count_fp="1.00",
+            yes_price_dollars="0.57", buy_max_cost_dollars="0.0001",
+        )
+
+    client._session.request.assert_not_called()
+
+
+def test_batch_item_refuses_buy_max_cost_dollars(client):
+    with pytest.raises(ValueError, match="buy_max_cost_dollars"):
+        client.portfolio.batch_place_orders([{
+            "ticker": "KXTEST", "action": "buy", "side": "yes",
+            "count_fp": "1.00", "yes_price_dollars": "0.57",
+            "buy_max_cost_dollars": "0.0001",
+        }])
+
+
+def test_place_order_keeps_the_realised_fill_price_and_fee(client, mock_response):
+    """A marketable order's ack carries average_fill_price/average_fee_paid --
+    the only place a caller sees what the order actually paid without a
+    separate /portfolio/fills round-trip. Both used to be discarded."""
+    ack = _create_ack(remaining="0.00", fill="1.00")
+    ack["average_fill_price"] = "0.5700"
+    ack["average_fee_paid"] = "0.0172"
+    client._session.request.return_value = mock_response(ack)
+
+    order = client.portfolio.place_order(
+        "KXTEST", Action.BUY, Side.YES, count_fp="1.00",
+        yes_price_dollars="0.57", time_in_force=TimeInForce.IOC,
+    )
+
+    assert order.average_fill_price_dollars == "0.5700"
+    assert order.average_fee_paid_dollars == "0.0172"
+
+
+def test_cancel_order_keeps_reduced_by(client, mock_response):
+    """The cancel response is a reduce receipt; reduced_by says how many
+    contracts actually came off the book."""
+    client._session.request.return_value = mock_response(
+        {"order_id": "o1", "reduced_by": "3.00", "ts_ms": 1}
+    )
+
+    order = client.portfolio.cancel_order("o1")
+
+    assert order.status == OrderStatus.CANCELED
+    assert order.reduced_by_fp == "3.00"
+
+
 def test_place_order_always_sends_required_v2_fields(client, mock_response):
     """time_in_force and self_trade_prevention_type are required by
     CreateOrderV2Request. Omitting them yields 400 missing_parameters, so they

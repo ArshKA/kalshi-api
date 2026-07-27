@@ -2,6 +2,7 @@
 # Re-run: python scripts/generate_sync.py
 from __future__ import annotations
 
+import logging
 import uuid
 from decimal import Decimal
 from typing import TYPE_CHECKING
@@ -26,6 +27,22 @@ from ..models import (
 if TYPE_CHECKING:
     from .client import KalshiClient
     from .markets import Market
+
+logger = logging.getLogger(__name__)
+
+#: Raised for `buy_max_cost_dollars`, which the V2 create endpoint accepts and
+#: ignores. Verified on demo: an order carrying
+#: `buy_max_cost_dollars: "0.0001"` filled 1 contract at $0.57 (fee $0.0172).
+#: Passing it silently buys no protection at all, so refuse it here rather than
+#: let a caller believe a slippage ceiling is in force.
+_BUY_MAX_COST_REMOVED = (
+    "buy_max_cost_dollars was removed with Kalshi's v1 order API. The V2 "
+    "endpoint accepts the field and ignores it, so it provides NO slippage "
+    "protection. Enforce a cost ceiling client-side before submitting "
+    "(a limit order already bounds per-contract price; count * price bounds "
+    "the total), or check the ack's average_fill_price_dollars / "
+    "average_fee_paid_dollars after the fill."
+)
 
 
 class Portfolio:
@@ -76,7 +93,10 @@ class Portfolio:
             post_only: If True, reject order if it would take liquidity.
             reduce_only: If True, only reduce existing position, never increase.
             expiration_ts: Unix timestamp when order auto-cancels.
-            buy_max_cost_dollars: Maximum total cost (dollar string). Protects against slippage.
+            buy_max_cost_dollars: Removed with Kalshi's v1 order API. Raises
+                ValueError -- the V2 endpoint accepts the field and ignores it,
+                so accepting it here would hand back a slippage ceiling that
+                does not exist.
             self_trade_prevention: Behavior on self-cross (CANCEL_RESTING or CANCEL_INCOMING).
             order_group_id: Link to an order group for OCO/bracket strategies.
             subaccount: Subaccount number (0 for primary, 1-63 for subaccounts).
@@ -419,6 +439,12 @@ class Portfolio:
             orders: List of order dicts with keys: ticker, action, side, count_fp,
                     yes_price_dollars/no_price_dollars, and optional advanced params.
 
+        Returns:
+            The placed Orders. The API rejects items individually, so a rejected
+            item is logged at WARNING and omitted -- the result can be shorter
+            than `orders`. Compare the lengths before assuming the whole batch
+            went on the book.
+
         Example:
             orders = [
                 {"ticker": "KXBTC", "action": "buy", "side": "yes", "count_fp": "10.00", "yes_price_dollars": "0.45"},
@@ -440,12 +466,20 @@ class Portfolio:
             order_ids: List of order IDs to cancel (max 20).
 
         Returns:
-            The canceled Orders with updated status.
+            The canceled Orders, each with status CANCELED and `reduced_by_fp`
+            set to the contracts actually pulled off the book. Orders the API
+            rejected are logged at WARNING and omitted, so the result can be
+            shorter than `order_ids` -- compare the lengths before treating a
+            mass cancel as complete.
         """
         orders = [{"order_id": oid} for oid in order_ids]
         response = self._client.delete("/portfolio/events/orders/batched", {"orders": orders})
         return DataFrameList(
-            Order(self._client, m) for m in self._orders_from_v2_batch(response)
+            Order(self._client, m)
+            for m in self._orders_from_v2_batch(
+                response, [{"order_id": oid} for oid in order_ids],
+                default_status=OrderStatus.CANCELED,
+            )
         )
 
     # --- Queue Position ---
@@ -815,6 +849,15 @@ class Portfolio:
             data["fill_count_fp"] = response["fill_count"]
         if response.get("remaining_count") is not None:
             data["remaining_count_fp"] = response["remaining_count"]
+        # What the immediate fill actually cost, and what a cancel actually
+        # pulled. Only the write acks carry these -- dropping them forces a
+        # /portfolio/fills round-trip to answer "what did that order pay?".
+        if response.get("average_fill_price") is not None:
+            data["average_fill_price_dollars"] = response["average_fill_price"]
+        if response.get("average_fee_paid") is not None:
+            data["average_fee_paid_dollars"] = response["average_fee_paid"]
+        if response.get("reduced_by") is not None:
+            data["reduced_by_fp"] = response["reduced_by"]
         # Canonical direction: the caller always knows it -- it is exactly what
         # went on the wire -- so a synthesised order carries the same fields a
         # fetched one does.
@@ -837,6 +880,7 @@ class Portfolio:
         response: dict,
         prepared: list[dict] | None = None,
         originals: list[dict] | None = None,
+        default_status: OrderStatus | None = None,
     ) -> list[OrderModel]:
         """Parse a batched response, tolerating the thin-ack item shape as well
         as the legacy {"order": {...}} wrapper.
@@ -844,6 +888,16 @@ class Portfolio:
         Like the single-order acks, batch acks carry no ticker/price/side, so the
         request that produced each one is folded back in. Items are matched by
         client_order_id where the caller supplied one, else positionally.
+
+        The API rejects items individually -- a batch of N can come back with
+        M < N orders and the rest as {"error": {...}} entries. Those cannot be
+        turned into an Order, so they are logged at WARNING rather than dropped
+        in silence; the returned list is shorter than the request.
+
+        `default_status` overrides the count-derived status for endpoints whose
+        receipts carry no counts (batch cancel returns {order_id, reduced_by,
+        ts_ms}, which would otherwise infer `resting` for an order that was in
+        fact canceled).
         """
         items = response.get("orders") or []
         prepared = prepared or []
@@ -863,6 +917,14 @@ class Portfolio:
                 models.append(OrderModel.model_validate(legacy))
                 continue
             if item.get("order_id") is None:
+                req = prepared[idx] if idx < len(prepared) else {}
+                logger.warning(
+                    "Batch item %d (%s) was rejected and is missing from the "
+                    "result: %s",
+                    idx,
+                    req.get("order_id") or req.get("ticker") or "unidentified",
+                    item.get("error", item),
+                )
                 continue
 
             i = by_coid.get(item.get("client_order_id"), idx)
@@ -873,6 +935,7 @@ class Portfolio:
                 "order_id": item["order_id"],
                 "ticker": item.get("ticker") or req.get("ticker") or "",
                 "status": item.get("status")
+                or default_status
                 or Portfolio._v2_status_from_ack(item),
             }
             bs = item.get("book_side") or req.get("side")
@@ -892,6 +955,12 @@ class Portfolio:
                 entry["remaining_count_fp"] = item["remaining_count"]
             if item.get("fill_count") is not None:
                 entry["fill_count_fp"] = item["fill_count"]
+            if item.get("average_fill_price") is not None:
+                entry["average_fill_price_dollars"] = item["average_fill_price"]
+            if item.get("average_fee_paid") is not None:
+                entry["average_fee_paid_dollars"] = item["average_fee_paid"]
+            if item.get("reduced_by") is not None:
+                entry["reduced_by_fp"] = item["reduced_by"]
             models.append(OrderModel.model_validate(entry))
         return models
 
@@ -922,6 +991,9 @@ class Portfolio:
         If price_level_structure is provided, validates tick size alignment.
         If fractional_trading_enabled is provided (False), validates count_fp is whole.
         """
+        if buy_max_cost_dollars is not None:
+            raise ValueError(_BUY_MAX_COST_REMOVED)
+
         if yes_price_dollars is not None and no_price_dollars is not None:
             raise ValueError("Specify yes_price_dollars or no_price_dollars, not both")
 
@@ -968,8 +1040,6 @@ class Portfolio:
             order_data["reduce_only"] = True
         if expiration_ts is not None:
             order_data["expiration_time"] = expiration_ts
-        if buy_max_cost_dollars is not None:
-            order_data["buy_max_cost_dollars"] = buy_max_cost_dollars
         if order_group_id is not None:
             order_data["order_group_id"] = order_group_id
         if subaccount is not None:
@@ -995,6 +1065,9 @@ class Portfolio:
         prepared = []
         for order in orders:
             o = dict(order)
+
+            if o.pop("buy_max_cost_dollars", None) is not None:
+                raise ValueError(f"Batch item: {_BUY_MAX_COST_REMOVED}")
 
             # Canonical item: normalise into the legacy names the rest of this
             # function already understands, then let it flow through.
