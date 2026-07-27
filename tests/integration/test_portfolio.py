@@ -142,16 +142,34 @@ class TestOrderGroups:
             )
 
             # Order-group membership can lag briefly on demo.
-            fetched = _eventually_fetch(
-                lambda: client.portfolio.get_order_group(group_id),
-                predicate=lambda group: (
-                    group.orders is not None
-                    and len(group.orders) == 2
-                    and order1.order_id in group.orders
-                    and order2.order_id in group.orders
-                ),
-                ignored_exceptions=(ResourceNotFoundError,),
-            )
+            try:
+                fetched = _eventually_fetch(
+                    lambda: client.portfolio.get_order_group(group_id),
+                    predicate=lambda group: (
+                        group.orders is not None
+                        and len(group.orders) == 2
+                        and order1.order_id in group.orders
+                        and order2.order_id in group.orders
+                    ),
+                    ignored_exceptions=(ResourceNotFoundError,),
+                )
+            except ResourceNotFoundError:
+                # Distinguish a demo read-model outage from a real API break.
+                # The create ack issued this id and trigger accepts it, so the
+                # write side has the group. If it is also absent from the LIST
+                # endpoint, query-exchange is not indexing new groups at all
+                # (observed 2026-07-26: creates succeed while both read paths
+                # 404 for hours) -- exchange-side unavailability, same policy
+                # as the 503 skip hook. A group that IS listed but 404s by id
+                # would be a genuine API regression, so that still fails.
+                listed = {g.id for g in client.portfolio.get_order_groups()}
+                if group_id not in listed:
+                    pytest.skip(
+                        "demo read model is not indexing new order groups "
+                        "(create succeeded; group absent from both GET-by-id "
+                        "and the list endpoint)"
+                    )
+                raise
             assert fetched.orders is not None
             assert len(fetched.orders) == 2
             assert order1.order_id in fetched.orders
