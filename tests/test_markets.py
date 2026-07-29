@@ -518,3 +518,136 @@ class TestMarketStatus:
         market = client.get_market("TEST")
 
         assert market.status == MarketStatus.OPEN
+
+
+class TestBatchOrderbooks:
+    """Tests for KalshiClient.get_orderbooks (GET /markets/orderbooks)."""
+
+    # Recorded from a live unauthenticated call to production (2026-07-28).
+    BATCH_RESPONSE = {
+        "orderbooks": [
+            {
+                "ticker": "TICK1",
+                "orderbook_fp": {
+                    "yes_dollars": [["0.0100", "1000.00"], ["0.4500", "200.00"]],
+                    "no_dollars": [["0.5000", "150.00"]],
+                },
+            },
+            {
+                "ticker": "TICK2",
+                "orderbook_fp": {
+                    "yes_dollars": [["0.3000", "50.00"]],
+                    "no_dollars": [],
+                },
+            },
+        ]
+    }
+
+    def test_get_orderbooks(self, client, mock_response):
+        """Batch fetch returns a dict of OrderbookResponse keyed by ticker."""
+        from pykalshi import OrderbookResponse
+
+        client._session.request.return_value = mock_response(self.BATCH_RESPONSE)
+
+        result = client.get_orderbooks(["TICK1", "TICK2"])
+
+        assert set(result) == {"TICK1", "TICK2"}
+        assert isinstance(result["TICK1"], OrderbookResponse)
+        assert result["TICK1"].best_yes_bid == "0.4500"
+        assert result["TICK1"].best_no_bid == "0.5000"
+        assert result["TICK1"].orderbook.yes_dollars == [
+            ("0.0100", "1000.00"), ("0.4500", "200.00"),
+        ]
+        assert result["TICK2"].best_yes_bid == "0.3000"
+        assert result["TICK2"].best_no_bid is None
+
+        call_args = client._session.request.call_args
+        assert call_args.args[0] == "GET"
+        url = call_args.args[1]
+        assert "/markets/orderbooks?" in url
+
+    def test_get_orderbooks_uses_repeated_params(self, client, mock_response):
+        """Tickers must be repeated params, never comma-joined (the API
+        silently misreads tickers=A,B as one bogus ticker)."""
+        client._session.request.return_value = mock_response({"orderbooks": []})
+
+        client.get_orderbooks(["TICK1", "TICK2", "TICK3"])
+
+        url = client._session.request.call_args.args[1]
+        assert "tickers=TICK1&tickers=TICK2&tickers=TICK3" in url
+        assert "%2C" not in url
+
+    def test_get_orderbooks_comma_ticker_raises(self, client):
+        """A ticker containing a comma is rejected before any request."""
+        with pytest.raises(ValueError, match="comma"):
+            client.get_orderbooks(["TICK1,TICK2"])
+        client._session.request.assert_not_called()
+
+    def test_get_orderbooks_empty_raises(self, client):
+        """An empty ticker list is rejected."""
+        with pytest.raises(ValueError, match="empty"):
+            client.get_orderbooks([])
+        client._session.request.assert_not_called()
+
+    def test_get_orderbooks_normalizes_and_dedupes(self, client, mock_response):
+        """Tickers are uppercased and duplicates collapse to one request."""
+        client._session.request.return_value = mock_response({"orderbooks": []})
+
+        client.get_orderbooks(["tick1", "TICK1", "tick2"])
+
+        assert client._session.request.call_count == 1
+        url = client._session.request.call_args.args[1]
+        assert "tickers=TICK1&tickers=TICK2" in url
+
+    def test_get_orderbooks_chunks_over_100(self, client, mock_response):
+        """More than 100 tickers are split into sequential requests of <=100
+        and the results merged."""
+        from urllib.parse import urlparse, parse_qs
+
+        tickers = [f"T{i:03d}" for i in range(150)]
+
+        def respond(chunk):
+            return mock_response({
+                "orderbooks": [
+                    {"ticker": t, "orderbook_fp": {"yes_dollars": [["0.0100", "1.00"]]}}
+                    for t in chunk
+                ]
+            })
+
+        client._session.request.side_effect = [
+            respond(tickers[:100]),
+            respond(tickers[100:]),
+        ]
+
+        result = client.get_orderbooks(tickers)
+
+        assert client._session.request.call_count == 2
+        sent = [
+            parse_qs(urlparse(call.args[1]).query)["tickers"]
+            for call in client._session.request.call_args_list
+        ]
+        assert sent[0] == tickers[:100]
+        assert sent[1] == tickers[100:]
+        assert len(result) == 150
+        assert result["T149"].best_yes_bid == "0.0100"
+
+    def test_get_orderbooks_null_book_tolerated(self, client, mock_response):
+        """A null/absent orderbook_fp yields an empty book, not an error."""
+        client._session.request.return_value = mock_response({
+            "orderbooks": [{"ticker": "TICK1", "orderbook_fp": None}]
+        })
+
+        result = client.get_orderbooks(["TICK1"])
+
+        assert result["TICK1"].best_yes_bid is None
+        assert result["TICK1"].best_no_bid is None
+
+    def test_get_orderbooks_extra_params_forwarded(self, client, mock_response):
+        """extra_params are appended to the query string of each request."""
+        client._session.request.return_value = mock_response({"orderbooks": []})
+
+        client.get_orderbooks(["TICK1"], foo="bar")
+
+        url = client._session.request.call_args.args[1]
+        assert "tickers=TICK1" in url
+        assert "foo=bar" in url

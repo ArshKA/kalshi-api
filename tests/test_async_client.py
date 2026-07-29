@@ -566,3 +566,83 @@ class TestAsyncCommunicationsFilters:
             await async_client.communications.get_rfqs(mve_collection_ticker="COL-1")
 
         async_client._session.request.assert_not_called()
+
+
+class TestAsyncBatchOrderbooks:
+    """Tests for AsyncKalshiClient.get_orderbooks (GET /markets/orderbooks)."""
+
+    @pytest.mark.asyncio
+    async def test_get_orderbooks(self, async_client):
+        async_client._session.request.return_value = _mock_response({
+            "orderbooks": [
+                {
+                    "ticker": "TICK1",
+                    "orderbook_fp": {
+                        "yes_dollars": [["0.0100", "1000.00"], ["0.4500", "200.00"]],
+                        "no_dollars": [["0.5000", "150.00"]],
+                    },
+                },
+            ]
+        })
+
+        result = await async_client.get_orderbooks(["tick1"])
+
+        assert set(result) == {"TICK1"}
+        assert result["TICK1"].best_yes_bid == "0.4500"
+
+        call_args = async_client._session.request.call_args
+        assert call_args.args[0] == "GET"
+        assert "/markets/orderbooks?tickers=TICK1" in call_args.args[1]
+
+    @pytest.mark.asyncio
+    async def test_get_orderbooks_repeated_params(self, async_client):
+        async_client._session.request.return_value = _mock_response({"orderbooks": []})
+
+        await async_client.get_orderbooks(["A1", "B2"])
+
+        url = async_client._session.request.call_args.args[1]
+        assert "tickers=A1&tickers=B2" in url
+        assert "%2C" not in url
+
+    @pytest.mark.asyncio
+    async def test_get_orderbooks_comma_ticker_raises(self, async_client):
+        with pytest.raises(ValueError, match="comma"):
+            await async_client.get_orderbooks(["A1,B2"])
+        async_client._session.request.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_get_orderbooks_empty_raises(self, async_client):
+        with pytest.raises(ValueError, match="empty"):
+            await async_client.get_orderbooks([])
+        async_client._session.request.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_get_orderbooks_chunks_over_100(self, async_client):
+        from urllib.parse import urlparse, parse_qs
+
+        tickers = [f"T{i:03d}" for i in range(101)]
+        async_client._session.request.side_effect = [
+            _mock_response({
+                "orderbooks": [
+                    {"ticker": t, "orderbook_fp": {"yes_dollars": [["0.0100", "1.00"]]}}
+                    for t in tickers[:100]
+                ]
+            }),
+            _mock_response({
+                "orderbooks": [
+                    {"ticker": t, "orderbook_fp": {"yes_dollars": [["0.0100", "1.00"]]}}
+                    for t in tickers[100:]
+                ]
+            }),
+        ]
+
+        result = await async_client.get_orderbooks(tickers)
+
+        assert async_client._session.request.call_count == 2
+        sent = [
+            parse_qs(urlparse(call.args[1]).query)["tickers"]
+            for call in async_client._session.request.call_args_list
+        ]
+        assert sent[0] == tickers[:100]
+        assert sent[1] == tickers[100:]
+        assert len(result) == 101

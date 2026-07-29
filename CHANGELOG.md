@@ -76,6 +76,16 @@
   models** instead of raw `dict`s, so the WebSocket and REST views of a
   market's tick grid are the same type. Handlers that subscripted the dicts
   (`band["step"]`) must use attribute access (`band.step`).
+### Added
+
+- `get_orderbooks(tickers)` on `KalshiClient` / `AsyncKalshiClient` wraps the
+  batch `GET /markets/orderbooks` endpoint and returns
+  `dict[str, OrderbookResponse]` keyed by ticker. Tickers are uppercased,
+  de-duplicated, and sent as repeated `tickers=` query parameters (the
+  comma-joined form is silently misread by the API, so tickers containing
+  commas raise `ValueError`). Lists longer than the API's 100-ticker limit
+  are chunked into sequential requests and merged, so any number of tickers
+  may be passed.
 
 ## 2.0.0 — 2026-07-26
 
