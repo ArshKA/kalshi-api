@@ -81,6 +81,11 @@ class Portfolio:
     ) -> Order:
         """Place an order on a market.
 
+        Passing a Market object rather than a bare ticker string enables
+        client-side price validation: the price is checked against the
+        market's ``price_ranges`` (Kalshi's canonical tick definition), or
+        against the ``price_level_structure`` label if ranges are absent.
+
         Args:
             ticker: Market ticker string or Market object.
             action: BUY or SELL.
@@ -128,9 +133,11 @@ class Portfolio:
         # Extract market structure for validation when a Market object is passed
         pls = None
         fte = None
+        price_ranges = None
         if not isinstance(ticker, str):
             pls = getattr(ticker, 'price_level_structure', None)
             fte = getattr(ticker, 'fractional_trading_enabled', None)
+            price_ranges = getattr(ticker, 'price_ranges', None)
 
         order_data = self._build_order_data(
             ticker, action, side, count_fp,
@@ -143,6 +150,7 @@ class Portfolio:
             cancel_order_on_pause=cancel_order_on_pause,
             price_level_structure=pls,
             fractional_trading_enabled=fte,
+            price_ranges=price_ranges,
         )
         response = self._client.post("/portfolio/events/orders", order_data)
         model = self._order_from_v2_ack(
@@ -696,8 +704,61 @@ class Portfolio:
     # --- Shared validation helpers ---
 
     @staticmethod
+    def _validate_price_ranges(price: Decimal, price_ranges) -> None:
+        """Validate a YES price against the market's ``price_ranges`` bands.
+
+        ``price_ranges`` is Kalshi's canonical tick definition: a list of
+        ``{start, end, step}`` bands in fixed-point dollar strings (accepted
+        here as ``PriceRange`` models or raw dicts, e.g. straight off a
+        ``market_lifecycle_v2`` frame). A price is valid when it falls inside
+        at least one band (``start <= price <= end``, inclusive) and sits on
+        that band's grid (``(price - start) % step == 0``). All arithmetic is
+        ``Decimal`` — never float.
+
+        Raises ValueError if the price is outside every band, or inside a
+        band but off its tick grid.
+        """
+        def _dec(band, key: str) -> Decimal:
+            raw = band.get(key) if isinstance(band, dict) else getattr(band, key, None)
+            try:
+                return Decimal(str(raw))
+            except (ArithmeticError, ValueError, TypeError):
+                raise ValueError(
+                    f"Malformed price range {band!r}: {key}={raw!r} is not a "
+                    f"decimal string"
+                ) from None
+
+        bands = [
+            (_dec(b, "start"), _dec(b, "end"), _dec(b, "step"))
+            for b in price_ranges
+        ]
+        in_band = False
+        for start, end, step in bands:
+            if not (start <= price <= end):
+                continue
+            in_band = True
+            # step <= 0 carries no grid information; any in-band price passes.
+            if step <= 0 or (price - start) % step == 0:
+                return
+        desc = ", ".join(f"[{s}..{e} step {st}]" for s, e, st in bands)
+        if in_band:
+            raise ValueError(
+                f"Price {price} is not on a valid tick for this market's "
+                f"price_ranges ({desc})"
+            )
+        raise ValueError(
+            f"Price {price} is outside this market's price_ranges ({desc})"
+        )
+
+    @staticmethod
     def _validate_tick_size(price: Decimal, price_level_structure: str) -> None:
         """Validate that price aligns to the market's tick size.
+
+        Legacy fallback keyed off the ``price_level_structure`` label; used
+        only when the market's ``price_ranges`` are absent. Knows the three
+        original labels (``linear_cent``, ``deci_cent``, ``tapered_deci_cent``)
+        and validates nothing for any other label — newer structures are
+        described by ``price_ranges``, which take precedence.
 
         Raises ValueError if the price is not on a valid tick boundary.
         """
@@ -932,10 +993,13 @@ class Portfolio:
         cancel_order_on_pause=None,
         price_level_structure=None,
         fractional_trading_enabled=None,
+        price_ranges=None,
     ) -> dict:
         """Build and validate order data dict. No I/O.
 
-        If price_level_structure is provided, validates tick size alignment.
+        If price_ranges is provided (Kalshi's canonical tick definition),
+        validates the price lies on a valid tick within its band; otherwise
+        falls back to the legacy price_level_structure label logic.
         If fractional_trading_enabled is provided (False), validates count_fp is whole.
         """
         if yes_price_dollars is not None and no_price_dollars is not None:
@@ -949,8 +1013,15 @@ class Portfolio:
         else:
             yes_price = Decimal(yes_price_dollars)
 
-        # Validate tick size if market structure is known
-        if price_level_structure:
+        # Validate tick size if market structure is known. price_ranges is
+        # the canonical definition (per Kalshi, consume it rather than keying
+        # off the label); the label switch is the fallback when ranges are
+        # absent. The isinstance guard keeps duck-typed / mock "market" objects
+        # (whose attributes are truthy but not real bands) on the legacy path
+        # instead of failing every price against an empty band list.
+        if isinstance(price_ranges, (list, tuple)) and price_ranges:
+            Portfolio._validate_price_ranges(yes_price, price_ranges)
+        elif price_level_structure:
             Portfolio._validate_tick_size(yes_price, price_level_structure)
 
         # Validate fractional trading

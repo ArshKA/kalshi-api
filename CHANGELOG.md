@@ -51,6 +51,31 @@
   optional `expires_ts` — absent means permanent). `read_limit` /
   `write_limit` remain as deprecated properties returning the corresponding
   `refill_rate` and emitting a `DeprecationWarning`.
+### Added
+
+- **`MarketModel.price_ranges`** (new exported `PriceRange` model:
+  `{start, end, step}` fixed-point dollar strings, plus `*_decimal`
+  accessors) — Kalshi's canonical tick definition for a market. The field is
+  required on the `Market` schema and was previously dropped by
+  `extra="ignore"`.
+- **Tick validation now consumes `price_ranges`.** When a `Market` object
+  passed to `place_order` carries `price_ranges`, the order price is
+  validated against them: it must fall inside a band
+  (`start <= price <= end`, inclusive) and sit on that band's grid
+  (`(price - start) % step == 0`), all in `Decimal` arithmetic — never
+  float. This covers the seven new `price_level_structure` values rolling
+  out from the week of 2026-07-27 (`center_{whole|half|quint}_edge_{half|
+  quint|deci}_cent`), where the old label-based switch silently validated
+  nothing. When ranges are absent, the legacy label logic (`linear_cent`,
+  `deci_cent`, `tapered_deci_cent`) applies unchanged; unknown labels
+  without ranges remain unvalidated, as before.
+
+### Changed
+
+- **`MarketLifecycleMessage.price_ranges` now parses into `PriceRange`
+  models** instead of raw `dict`s, so the WebSocket and REST views of a
+  market's tick grid are the same type. Handlers that subscripted the dicts
+  (`band["step"]`) must use attribute access (`band.step`).
 
 ## 2.0.0 — 2026-07-26
 

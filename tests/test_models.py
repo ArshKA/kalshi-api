@@ -1,8 +1,10 @@
 import pytest
+from decimal import Decimal
 from pykalshi.models import (
     BalanceModel,
     OrderModel,
     MarketModel,
+    PriceRange,
     FillModel,
     ExchangeStatus,
     APILimits,
@@ -54,6 +56,44 @@ def test_market_model_validation():
     model = MarketModel.model_validate(data)
     assert model.ticker == "TEST-1"
     assert model.yes_bid_dollars == "0.10"
+
+
+def test_market_model_price_ranges():
+    """MarketModel carries price_ranges — Kalshi's canonical tick definition
+    (required on the Market schema since the Jul 23 2026 changelog)."""
+    data = {
+        "ticker": "TEST-1",
+        "status": "open",
+        "price_level_structure": "center_half_edge_quint_cent",
+        "price_ranges": [
+            {"start": "0.002", "end": "0.10", "step": "0.002"},
+            {"start": "0.10", "end": "0.90", "step": "0.005"},
+            {"start": "0.90", "end": "0.998", "step": "0.002"},
+        ],
+    }
+    model = MarketModel.model_validate(data)
+    assert model.price_level_structure == "center_half_edge_quint_cent"
+    assert len(model.price_ranges) == 3
+    band = model.price_ranges[1]
+    assert isinstance(band, PriceRange)
+    assert (band.start, band.end, band.step) == ("0.10", "0.90", "0.005")
+    # Decimal-safe accessors for tick arithmetic.
+    assert band.step_decimal == Decimal("0.005")
+    assert band.start_decimal == Decimal("0.10")
+    assert band.end_decimal == Decimal("0.90")
+
+
+def test_market_model_price_ranges_absent():
+    """Older payloads without price_ranges still validate (field is None)."""
+    model = MarketModel.model_validate({"ticker": "TEST-1", "status": "open"})
+    assert model.price_ranges is None
+
+
+def test_price_range_exported_at_top_level():
+    import pykalshi
+
+    assert pykalshi.PriceRange is PriceRange
+    assert "PriceRange" in pykalshi.__all__
 
 
 def test_invalid_data_raises_error():

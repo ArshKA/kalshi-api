@@ -17,6 +17,7 @@ from typing import Annotated, Any, Callable, Union, TYPE_CHECKING
 from pydantic import AliasChoices, BaseModel, BeforeValidator, ConfigDict, Field, model_validator
 
 from ._utils import normalize_ticker, normalize_tickers
+from .models import PriceRange
 
 if TYPE_CHECKING:
     from .client import KalshiClient
@@ -342,7 +343,9 @@ class MarketLifecycleMessage(BaseModel):
     settlement_value: str | None = None
     is_deactivated: bool | None = None
     price_level_structure: str | None = None
-    price_ranges: list[dict] | None = None
+    # Same shape as MarketModel.price_ranges — the canonical tick definition.
+    # Sent on `price_level_structure_updated` (and `created`) frames.
+    price_ranges: list[PriceRange] | None = None
     event_ticker: str | None = None
 
     # Emitted on `metadata_updated` events (and `additional_metadata` on
