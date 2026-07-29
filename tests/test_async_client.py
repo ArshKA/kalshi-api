@@ -416,3 +416,153 @@ class TestAsyncSubaccounts:
         call_args = async_client._session.request.call_args
         assert "/decrease?subaccount=3" in call_args.args[1]
         assert json.loads(call_args.kwargs["content"]) == {"reduce_by": "5.00"}
+
+
+class TestAsyncCommunicationsFilters:
+    """AsyncCommunications.get_quotes / get_rfqs build spec-exact query dicts."""
+
+    @staticmethod
+    def _query_dict(async_client) -> dict:
+        from urllib.parse import parse_qsl, urlsplit
+        call_url = async_client._session.request.call_args.args[1]
+        return dict(parse_qsl(urlsplit(call_url).query))
+
+    @pytest.mark.asyncio
+    async def test_get_quotes_default_query(self, async_client):
+        async_client._session.request.return_value = _mock_response(
+            {"quotes": [], "cursor": ""}
+        )
+
+        await async_client.communications.get_quotes()
+
+        assert self._query_dict(async_client) == {"limit": "500"}
+
+    @pytest.mark.asyncio
+    async def test_get_quotes_with_filters(self, async_client):
+        async_client._session.request.return_value = _mock_response(
+            {"quotes": [], "cursor": ""}
+        )
+
+        await async_client.communications.get_quotes(
+            user_filter="self",
+            rfq_user_filter="self",
+            rfq_id="rfq-001",
+            status="open",
+            min_ts=1700000000,
+            max_ts=1800000000,
+            rfq_creator_subtrader_id="sub-1",
+            limit=200,
+            cursor="cur-1",
+        )
+
+        assert self._query_dict(async_client) == {
+            "user_filter": "self",
+            "rfq_user_filter": "self",
+            "rfq_id": "rfq-001",
+            "status": "open",
+            "min_ts": "1700000000",
+            "max_ts": "1800000000",
+            "rfq_creator_subtrader_id": "sub-1",
+            "limit": "200",
+            "cursor": "cur-1",
+        }
+
+    @pytest.mark.asyncio
+    async def test_get_quotes_rejects_removed_filters(self, async_client):
+        with pytest.raises(TypeError, match="market_ticker"):
+            await async_client.communications.get_quotes(market_ticker="KXMVE-A")
+        with pytest.raises(TypeError, match="event_ticker"):
+            await async_client.communications.get_quotes(event_ticker="KXMVE-EVT")
+
+        async_client._session.request.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_get_quotes_creator_user_id_alias(self, async_client):
+        async_client._session.request.return_value = _mock_response(
+            {"quotes": [], "cursor": ""}
+        )
+
+        with pytest.warns(DeprecationWarning, match="quote_creator_user_id"):
+            await async_client.communications.get_quotes(creator_user_id="user-1")
+
+        assert self._query_dict(async_client) == {
+            "quote_creator_user_id": "user-1",
+            "limit": "500",
+        }
+
+    @pytest.mark.asyncio
+    async def test_get_quotes_deprecated_id_filters_warn(self, async_client):
+        async_client._session.request.return_value = _mock_response(
+            {"quotes": [], "cursor": ""}
+        )
+
+        with pytest.warns(DeprecationWarning, match="user_filter"):
+            await async_client.communications.get_quotes(
+                quote_creator_user_id="user-1"
+            )
+        with pytest.warns(DeprecationWarning, match="rfq_user_filter"):
+            await async_client.communications.get_quotes(
+                rfq_creator_user_id="user-2"
+            )
+
+        assert self._query_dict(async_client) == {
+            "rfq_creator_user_id": "user-2",
+            "limit": "500",
+        }
+
+    @pytest.mark.asyncio
+    async def test_get_rfqs_default_query(self, async_client):
+        async_client._session.request.return_value = _mock_response(
+            {"rfqs": [], "cursor": ""}
+        )
+
+        await async_client.communications.get_rfqs()
+
+        assert self._query_dict(async_client) == {"limit": "100"}
+
+    @pytest.mark.asyncio
+    async def test_get_rfqs_with_filters(self, async_client):
+        async_client._session.request.return_value = _mock_response(
+            {"rfqs": [], "cursor": ""}
+        )
+
+        await async_client.communications.get_rfqs(
+            market_ticker="kxmve-combo",
+            event_ticker="kxmve-evt",
+            status="open",
+            user_filter="self",
+            subaccount=3,
+            limit=50,
+            cursor="cur-1",
+        )
+
+        assert self._query_dict(async_client) == {
+            "market_ticker": "KXMVE-COMBO",
+            "event_ticker": "KXMVE-EVT",
+            "status": "open",
+            "user_filter": "self",
+            "subaccount": "3",
+            "limit": "50",
+            "cursor": "cur-1",
+        }
+
+    @pytest.mark.asyncio
+    async def test_get_rfqs_creator_user_id_deprecated(self, async_client):
+        async_client._session.request.return_value = _mock_response(
+            {"rfqs": [], "cursor": ""}
+        )
+
+        with pytest.warns(DeprecationWarning, match="user_filter"):
+            await async_client.communications.get_rfqs(creator_user_id="user-1")
+
+        assert self._query_dict(async_client) == {
+            "creator_user_id": "user-1",
+            "limit": "100",
+        }
+
+    @pytest.mark.asyncio
+    async def test_get_rfqs_rejects_mve_collection_ticker(self, async_client):
+        with pytest.raises(TypeError, match="mve_collection_ticker"):
+            await async_client.communications.get_rfqs(mve_collection_ticker="COL-1")
+
+        async_client._session.request.assert_not_called()

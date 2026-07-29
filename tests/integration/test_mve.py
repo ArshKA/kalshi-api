@@ -207,24 +207,10 @@ class TestCommunications:
     def test_get_quotes(self, client):
         """List quotes returns list of QuoteModel objects.
 
-        The API requires a valid creator_user_id or rfq_creator_user_id,
-        and only allows querying quotes for RFQs the current user created.
+        Scopes results with rfq_user_filter="self" — the documented
+        replacement for the API-deprecated creator-ID filters.
         """
-        rfqs = client.communications.get_rfqs(limit=10)
-
-        # Find an RFQ created by the current user (api_key_id == member_id).
-        own_rfq = None
-        for rfq in rfqs:
-            if rfq.creator_id and rfq.creator_id == client.api_key_id:
-                own_rfq = rfq
-                break
-
-        if not own_rfq:
-            pytest.skip("No RFQs created by the current user available to query quotes")
-
-        quotes = client.communications.get_quotes(
-            rfq_creator_user_id=own_rfq.creator_id, limit=10
-        )
+        quotes = client.communications.get_quotes(rfq_user_filter="self", limit=10)
 
         assert isinstance(quotes, list)
         if quotes:
@@ -234,7 +220,7 @@ class TestCommunications:
 
     def test_get_rfqs_with_filter(self, client):
         """List RFQs with status filter."""
-        rfqs = client.communications.get_rfqs(status="active", limit=10)
+        rfqs = client.communications.get_rfqs(status="open", limit=10)
 
         assert isinstance(rfqs, list)
 

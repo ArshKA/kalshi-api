@@ -2,6 +2,7 @@
 
 import pytest
 from unittest.mock import ANY
+from urllib.parse import parse_qsl, urlsplit
 
 from pykalshi import (
     Market, Event, MveCollection, Communications,
@@ -9,6 +10,12 @@ from pykalshi import (
     RfqModel, QuoteModel, MarketModel,
 )
 from pykalshi.exceptions import ResourceNotFoundError
+
+
+def _query_dict(client) -> dict:
+    """Return the query params of the last requested URL as a dict."""
+    call_url = client._session.request.call_args.args[1]
+    return dict(parse_qsl(urlsplit(call_url).query))
 
 
 # --- MarketModel MVE fields ---
@@ -663,23 +670,73 @@ class TestCommunicationsGetRfqs:
         assert rfqs[0].rfq_id == "rfq-001"
         assert rfqs[1].status == "expired"
 
+    def test_get_rfqs_default_query(self, client, mock_response):
+        """With no filters, only the (spec-default) limit is sent."""
+        client._session.request.return_value = mock_response({
+            "rfqs": [],
+            "cursor": "",
+        })
+
+        client.communications.get_rfqs()
+
+        assert _query_dict(client) == {"limit": "100"}
+
     def test_get_rfqs_with_filters(self, client, mock_response):
-        """Test listing RFQs with filters."""
+        """All documented filters are sent, exactly as named in the spec."""
         client._session.request.return_value = mock_response({
             "rfqs": [],
             "cursor": "",
         })
 
         client.communications.get_rfqs(
-            market_ticker="KXMVE-COMBO",
-            status="active",
-            mve_collection_ticker="COL-1",
+            market_ticker="kxmve-combo",
+            event_ticker="kxmve-evt",
+            status="open",
+            user_filter="self",
+            subaccount=3,
+            limit=50,
+            cursor="cur-1",
         )
 
-        call_url = client._session.request.call_args.args[1]
-        assert "market_ticker=KXMVE-COMBO" in call_url
-        assert "status=active" in call_url
-        assert "mve_collection_ticker=COL-1" in call_url
+        assert _query_dict(client) == {
+            "market_ticker": "KXMVE-COMBO",
+            "event_ticker": "KXMVE-EVT",
+            "status": "open",
+            "user_filter": "self",
+            "subaccount": "3",
+            "limit": "50",
+            "cursor": "cur-1",
+        }
+
+    def test_get_rfqs_creator_user_id_deprecated(self, client, mock_response):
+        """creator_user_id still works but raises a DeprecationWarning."""
+        client._session.request.return_value = mock_response({
+            "rfqs": [],
+            "cursor": "",
+        })
+
+        with pytest.warns(DeprecationWarning, match="user_filter"):
+            client.communications.get_rfqs(creator_user_id="user-1")
+
+        assert _query_dict(client) == {"creator_user_id": "user-1", "limit": "100"}
+
+    def test_get_rfqs_rejects_mve_collection_ticker(self, client, mock_response):
+        """The undocumented mve_collection_ticker filter is rejected, not sent."""
+        with pytest.raises(TypeError, match="mve_collection_ticker"):
+            client.communications.get_rfqs(mve_collection_ticker="COL-1")
+
+        client._session.request.assert_not_called()
+
+    def test_get_rfqs_extra_params_passthrough(self, client, mock_response):
+        """Unknown kwargs pass through as query params (forward compatibility)."""
+        client._session.request.return_value = mock_response({
+            "rfqs": [],
+            "cursor": "",
+        })
+
+        client.communications.get_rfqs(future_param="x")
+
+        assert _query_dict(client) == {"future_param": "x", "limit": "100"}
 
     def test_get_rfqs_pagination(self, client, mock_response):
         """Test RFQ pagination with fetch_all."""
@@ -799,23 +856,108 @@ class TestCommunicationsGetQuotes:
         assert len(quotes) == 2
         assert all(isinstance(q, QuoteModel) for q in quotes)
 
+    def test_get_quotes_default_query(self, client, mock_response):
+        """With no filters, only the (spec-default) limit is sent."""
+        client._session.request.return_value = mock_response({
+            "quotes": [],
+            "cursor": "",
+        })
+
+        client.communications.get_quotes()
+
+        assert _query_dict(client) == {"limit": "500"}
+
     def test_get_quotes_with_filters(self, client, mock_response):
-        """Test listing quotes with filters."""
+        """All documented filters are sent, exactly as named in the spec."""
         client._session.request.return_value = mock_response({
             "quotes": [],
             "cursor": "",
         })
 
         client.communications.get_quotes(
+            user_filter="self",
+            rfq_user_filter="self",
             rfq_id="rfq-001",
-            market_ticker="KXMVE-COMBO",
-            status="pending",
+            status="open",
+            min_ts=1700000000,
+            max_ts=1800000000,
+            rfq_creator_subtrader_id="sub-1",
+            limit=200,
+            cursor="cur-1",
         )
 
-        call_url = client._session.request.call_args.args[1]
-        assert "rfq_id=rfq-001" in call_url
-        assert "market_ticker=KXMVE-COMBO" in call_url
-        assert "status=pending" in call_url
+        assert _query_dict(client) == {
+            "user_filter": "self",
+            "rfq_user_filter": "self",
+            "rfq_id": "rfq-001",
+            "status": "open",
+            "min_ts": "1700000000",
+            "max_ts": "1800000000",
+            "rfq_creator_subtrader_id": "sub-1",
+            "limit": "200",
+            "cursor": "cur-1",
+        }
+
+    def test_get_quotes_rejects_market_ticker(self, client, mock_response):
+        """market_ticker was removed from the API (2026-06-20): loud failure."""
+        with pytest.raises(TypeError, match="market_ticker"):
+            client.communications.get_quotes(market_ticker="KXMVE-COMBO")
+
+        client._session.request.assert_not_called()
+
+    def test_get_quotes_rejects_event_ticker(self, client, mock_response):
+        """event_ticker was likewise removed from the API: loud failure."""
+        with pytest.raises(TypeError, match="event_ticker"):
+            client.communications.get_quotes(event_ticker="KXMVE-EVT")
+
+        client._session.request.assert_not_called()
+
+    def test_get_quotes_creator_user_id_alias(self, client, mock_response):
+        """creator_user_id warns and maps onto quote_creator_user_id."""
+        client._session.request.return_value = mock_response({
+            "quotes": [],
+            "cursor": "",
+        })
+
+        with pytest.warns(DeprecationWarning, match="quote_creator_user_id"):
+            client.communications.get_quotes(creator_user_id="user-1")
+
+        assert _query_dict(client) == {
+            "quote_creator_user_id": "user-1",
+            "limit": "500",
+        }
+
+    def test_get_quotes_deprecated_id_filters_warn(self, client, mock_response):
+        """API-deprecated ID filters still work but raise DeprecationWarning."""
+        client._session.request.return_value = mock_response({
+            "quotes": [],
+            "cursor": "",
+        })
+
+        with pytest.warns(DeprecationWarning, match="user_filter"):
+            client.communications.get_quotes(quote_creator_user_id="user-1")
+        assert _query_dict(client) == {
+            "quote_creator_user_id": "user-1",
+            "limit": "500",
+        }
+
+        with pytest.warns(DeprecationWarning, match="rfq_user_filter"):
+            client.communications.get_quotes(rfq_creator_user_id="user-2")
+        assert _query_dict(client) == {
+            "rfq_creator_user_id": "user-2",
+            "limit": "500",
+        }
+
+    def test_get_quotes_extra_params_passthrough(self, client, mock_response):
+        """Unknown kwargs pass through as query params (forward compatibility)."""
+        client._session.request.return_value = mock_response({
+            "quotes": [],
+            "cursor": "",
+        })
+
+        client.communications.get_quotes(future_param="x")
+
+        assert _query_dict(client) == {"future_param": "x", "limit": "500"}
 
 
 # --- Workflow tests ---
