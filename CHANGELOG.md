@@ -15,6 +15,29 @@
   fields are silently ignored — the same failure mode as above, plus typos
   (e.g. `expiry_ts`) going undetected. Unknown keys now raise `ValueError`
   naming the offending key(s).
+- **`communications.get_quotes` realigned to the live API.** It previously
+  sent `creator_user_id` (a parameter name the API never documented — the
+  deprecated spelling is `quote_creator_user_id`) and `market_ticker`
+  (filter removed by Kalshi on 2026-06-20), so those filters could return
+  unfiltered results. Policy for old kwargs: names with a still-supported
+  server-side mapping become `DeprecationWarning` aliases; names whose
+  filter no longer exists raise `TypeError` rather than silently returning
+  unfiltered data.
+  - Added first-class filters from the spec: `user_filter="self"`,
+    `rfq_user_filter="self"`, `min_ts`, `max_ts`, `rfq_creator_subtrader_id`
+    (plus existing `rfq_id`, `status`, `cursor`).
+  - `creator_user_id=` is kept as a deprecated alias mapping to
+    `quote_creator_user_id`; `quote_creator_user_id` / `rfq_creator_user_id`
+    are deprecated by the API itself and now emit `DeprecationWarning`.
+  - `market_ticker=` / `event_ticker=` raise `TypeError`; filter the
+    returned quotes by their `market_ticker` field instead.
+  - Default `limit` corrected from 100 to 500 (the API default and max).
+- **`communications.get_rfqs` filter surface aligned to the spec.** Added
+  `event_ticker`, `user_filter="self"`, `subaccount`, and the API-deprecated
+  `creator_user_id` (emits `DeprecationWarning`). The undocumented
+  `mve_collection_ticker` kwarg now raises `TypeError`; filter the returned
+  RFQs by their `mve_collection_ticker` field instead. Both methods accept
+  `**extra_params` for forward compatibility.
 
 ## 2.0.0 — 2026-07-26
 
