@@ -1,13 +1,35 @@
 """Tests for historical data endpoints."""
 
 import pytest
-from unittest.mock import ANY
+from unittest.mock import ANY, AsyncMock
 
 from pykalshi import Market, Order, History
 from pykalshi.enums import CandlestickPeriod
 from pykalshi.models import (
     HistoricalCutoffResponse, HistoricalCandlestick, FillModel, TradeModel,
+    PositionModel,
 )
+
+# Docs-derived MarketPosition payload (GET /historical/positions).
+HISTORICAL_POSITION = {
+    "ticker": "OLD-MKT-A",
+    "total_traded_dollars": "12.5000",
+    "position_fp": "-10.00",
+    "market_exposure_dollars": "0.0000",
+    "realized_pnl_dollars": "2.3500",
+    "fees_paid_dollars": "0.1200",
+    "last_updated_ts": "2026-01-10T00:00:00Z",
+}
+
+# Docs-derived EventPosition payload, returned alongside market_positions.
+HISTORICAL_EVENT_POSITION = {
+    "event_ticker": "OLD-EVT",
+    "total_cost_dollars": "12.5000",
+    "total_cost_shares_fp": "10.00",
+    "event_exposure_dollars": "0.0000",
+    "realized_pnl_dollars": "2.3500",
+    "fees_paid_dollars": "0.1200",
+}
 
 
 class TestHistoricalCutoff:
@@ -27,6 +49,21 @@ class TestHistoricalCutoff:
         assert cutoff.market_settled_ts == "2026-01-15T00:00:00Z"
         assert cutoff.trades_created_ts == "2026-01-15T00:00:00Z"
         assert cutoff.orders_updated_ts == "2026-01-15T00:00:00Z"
+        # Optional field absent from older payloads.
+        assert cutoff.market_positions_last_updated_ts is None
+
+    def test_get_cutoff_with_positions_timestamp(self, client, mock_response):
+        """Test cutoff response carrying market_positions_last_updated_ts."""
+        client._session.request.return_value = mock_response({
+            "market_settled_ts": "2026-01-15T00:00:00Z",
+            "trades_created_ts": "2026-01-15T00:00:00Z",
+            "orders_updated_ts": "2026-01-15T00:00:00Z",
+            "market_positions_last_updated_ts": "2026-01-12T00:00:00Z",
+        })
+
+        cutoff = client.history.get_cutoff()
+
+        assert cutoff.market_positions_last_updated_ts == "2026-01-12T00:00:00Z"
 
 
 class TestHistoricalMarkets:
@@ -280,6 +317,72 @@ class TestHistoricalOrders:
         assert client._session.request.call_count == 2
 
 
+class TestHistoricalPositions:
+    """Tests for the /historical/positions endpoint (authenticated)."""
+
+    def test_get_positions(self, client, mock_response):
+        """Test fetching historical positions."""
+        client._session.request.return_value = mock_response({
+            "market_positions": [HISTORICAL_POSITION],
+            "event_positions": [HISTORICAL_EVENT_POSITION],
+            "cursor": "",
+        })
+
+        positions = client.history.get_positions()
+
+        assert len(positions) == 1
+        p = positions[0]
+        assert isinstance(p, PositionModel)
+        assert p.ticker == "OLD-MKT-A"
+        assert p.position_fp == "-10.00"
+        assert p.total_traded_dollars == "12.5000"
+        assert p.market_exposure_dollars == "0.0000"
+        assert p.realized_pnl_dollars == "2.3500"
+        assert p.fees_paid_dollars == "0.1200"
+        assert p.last_updated_ts == "2026-01-10T00:00:00Z"
+
+        call_url = client._session.request.call_args.args[1]
+        assert "/historical/positions" in call_url
+
+    def test_get_positions_with_filters(self, client, mock_response):
+        """Test historical positions with ticker and event_ticker filters."""
+        client._session.request.return_value = mock_response({
+            "market_positions": [],
+            "event_positions": [],
+            "cursor": "",
+        })
+
+        client.history.get_positions(
+            ticker="old-mkt-a", event_ticker="old-evt", limit=50,
+        )
+
+        call_url = client._session.request.call_args.args[1]
+        assert "ticker=OLD-MKT-A" in call_url
+        assert "event_ticker=OLD-EVT" in call_url
+        assert "limit=50" in call_url
+
+    def test_get_positions_pagination(self, client, mock_response):
+        """Test historical positions pagination with fetch_all."""
+        client._session.request.side_effect = [
+            mock_response({
+                "market_positions": [dict(HISTORICAL_POSITION, ticker="M1")],
+                "event_positions": [],
+                "cursor": "page2",
+            }),
+            mock_response({
+                "market_positions": [dict(HISTORICAL_POSITION, ticker="M2")],
+                "event_positions": [],
+                "cursor": "",
+            }),
+        ]
+
+        positions = client.history.get_positions(fetch_all=True)
+
+        assert len(positions) == 2
+        assert [p.ticker for p in positions] == ["M1", "M2"]
+        assert client._session.request.call_count == 2
+
+
 class TestHistoricalTrades:
     """Tests for the /historical/trades endpoint."""
 
@@ -352,3 +455,92 @@ class TestHistoryAccessor:
         h2 = client.history
         assert h1 is h2
         assert isinstance(h1, History)
+
+
+@pytest.fixture
+def async_client(mocker):
+    """Returns an AsyncKalshiClient with mocked auth and HTTP session."""
+    from pykalshi import AsyncKalshiClient
+
+    mocker.patch("pykalshi._base._BaseKalshiClient._load_private_key")
+    mocker.patch(
+        "pykalshi._base._BaseKalshiClient._sign_request",
+        return_value=("1234567890", "fake_sig"),
+    )
+    mocker.patch("httpx.AsyncClient")
+
+    c = AsyncKalshiClient(api_key_id="fake_key", private_key_path="fake_path", demo=True)
+    c._session.request = AsyncMock()
+    return c
+
+
+class TestAsyncHistoricalPositions:
+    """Async tests for /historical/positions and the cutoff field."""
+
+    async def test_get_positions(self, async_client, mock_response):
+        """Test fetching historical positions asynchronously."""
+        async_client._session.request.return_value = mock_response({
+            "market_positions": [HISTORICAL_POSITION],
+            "event_positions": [HISTORICAL_EVENT_POSITION],
+            "cursor": "",
+        })
+
+        positions = await async_client.history.get_positions()
+
+        assert len(positions) == 1
+        assert isinstance(positions[0], PositionModel)
+        assert positions[0].ticker == "OLD-MKT-A"
+        assert positions[0].position_fp == "-10.00"
+
+        call_url = async_client._session.request.call_args.args[1]
+        assert "/historical/positions" in call_url
+
+    async def test_get_positions_with_filters(self, async_client, mock_response):
+        """Test async historical positions filter params."""
+        async_client._session.request.return_value = mock_response({
+            "market_positions": [],
+            "event_positions": [],
+            "cursor": "",
+        })
+
+        await async_client.history.get_positions(
+            ticker="old-mkt-a", event_ticker="old-evt", limit=50,
+        )
+
+        call_url = async_client._session.request.call_args.args[1]
+        assert "ticker=OLD-MKT-A" in call_url
+        assert "event_ticker=OLD-EVT" in call_url
+        assert "limit=50" in call_url
+
+    async def test_get_positions_pagination(self, async_client, mock_response):
+        """Test async historical positions pagination with fetch_all."""
+        async_client._session.request.side_effect = [
+            mock_response({
+                "market_positions": [dict(HISTORICAL_POSITION, ticker="M1")],
+                "event_positions": [],
+                "cursor": "page2",
+            }),
+            mock_response({
+                "market_positions": [dict(HISTORICAL_POSITION, ticker="M2")],
+                "event_positions": [],
+                "cursor": "",
+            }),
+        ]
+
+        positions = await async_client.history.get_positions(fetch_all=True)
+
+        assert [p.ticker for p in positions] == ["M1", "M2"]
+        assert async_client._session.request.call_count == 2
+
+    async def test_get_cutoff_with_positions_timestamp(self, async_client, mock_response):
+        """Test async cutoff response carrying market_positions_last_updated_ts."""
+        async_client._session.request.return_value = mock_response({
+            "market_settled_ts": "2026-01-15T00:00:00Z",
+            "trades_created_ts": "2026-01-15T00:00:00Z",
+            "orders_updated_ts": "2026-01-15T00:00:00Z",
+            "market_positions_last_updated_ts": "2026-01-12T00:00:00Z",
+        })
+
+        cutoff = await async_client.history.get_cutoff()
+
+        assert cutoff.market_positions_last_updated_ts == "2026-01-12T00:00:00Z"
