@@ -38,6 +38,19 @@
   `mve_collection_ticker` kwarg now raises `TypeError`; filter the returned
   RFQs by their `mve_collection_ticker` field instead. Both methods accept
   `**extra_params` for forward compatibility.
+### Fixed
+
+- **`APILimits` realigned to the live `/account/limits` response.** Kalshi
+  restructured the endpoint (Apr 30, 2026) to nested per-bucket objects and
+  added automated usage-tier `grants` (Jun 5, 2026); the old flat
+  `read_limit` / `write_limit` fields no longer existed on the wire, so
+  `get_limits()` returned an empty shell with every field `None`. The model
+  now carries `usage_tier`, `read` / `write` (new `RateBucket` with
+  `refill_rate` tokens/second and `bucket_capacity` burst headroom), and
+  `grants` (new `Grant` with `exchange_instance`, `level`, `source`, and
+  optional `expires_ts` — absent means permanent). `read_limit` /
+  `write_limit` remain as deprecated properties returning the corresponding
+  `refill_rate` and emitting a `DeprecationWarning`.
 
 ## 2.0.0 — 2026-07-26
 

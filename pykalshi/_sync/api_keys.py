@@ -61,6 +61,13 @@ class APIKeys:
         self._client.delete(f"/api_keys/{key_id}")
 
     def get_limits(self) -> APILimits:
-        """Get API rate limits for this account."""
+        """Get the account's API usage tier and token-bucket rate limits.
+
+        Returns an APILimits with the effective ``usage_tier`` (basic,
+        advanced, expert, premier, paragon, prime, or prestige), per-bucket
+        ``read`` / ``write`` budgets (``refill_rate`` tokens per second,
+        ``bucket_capacity`` burst headroom), and any active usage-level
+        ``grants``.
+        """
         data = self._client.get("/account/limits")
         return APILimits.model_validate(data)

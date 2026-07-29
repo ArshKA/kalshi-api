@@ -6,6 +6,8 @@ from pykalshi.models import (
     FillModel,
     ExchangeStatus,
     APILimits,
+    RateBucket,
+    Grant,
     RateLimitTier,
     APIKey,
     GeneratedAPIKey,
@@ -95,25 +97,65 @@ def test_rate_limit_tier_model():
     assert model.period_seconds == 60
 
 
+# Live-verified /account/limits payload (captured 2026-07-26 from production).
+API_LIMITS_WIRE = {
+    "usage_tier": "basic",
+    "read": {"refill_rate": 200, "bucket_capacity": 400},
+    "write": {"refill_rate": 100, "bucket_capacity": 100},
+    "grants": [
+        {"exchange_instance": "event_contract", "level": "advanced", "source": "manual"},
+    ],
+}
+
+
 def test_api_limits_model():
-    """Test APILimits model validation."""
-    data = {
-        "usage_tier": "standard",
-        "read_limit": 20,
-        "write_limit": 10,
-    }
-    model = APILimits.model_validate(data)
-    assert model.usage_tier == "standard"
-    assert model.read_limit == 20
-    assert model.write_limit == 10
+    """Test APILimits against the live-verified nested wire shape."""
+    model = APILimits.model_validate(API_LIMITS_WIRE)
+    assert model.usage_tier == "basic"
+    assert model.read.refill_rate == 200
+    assert model.read.bucket_capacity == 400
+    assert model.write.refill_rate == 100
+    assert model.write.bucket_capacity == 100
+    assert len(model.grants) == 1
+    grant = model.grants[0]
+    assert grant.exchange_instance == "event_contract"
+    assert grant.level == "advanced"
+    assert grant.source == "manual"
+    assert grant.expires_ts is None  # no expires_ts => permanent grant
 
 
-def test_api_limits_model_minimal():
-    """Test APILimits with minimal data."""
-    data = {}
+def test_api_limits_model_no_grants():
+    """Test APILimits tolerates a missing grants array."""
+    data = {k: v for k, v in API_LIMITS_WIRE.items() if k != "grants"}
     model = APILimits.model_validate(data)
-    assert model.usage_tier is None
-    assert model.read_limit is None
+    assert model.grants == []
+
+
+def test_api_limits_grant_with_expiry():
+    """Test Grant parses an expiring grant."""
+    grant = Grant.model_validate({
+        "exchange_instance": "event_contract",
+        "level": "expert",
+        "source": "volume",
+        "expires_ts": 1782518400,
+    })
+    assert grant.expires_ts == 1782518400
+
+
+def test_rate_bucket_model():
+    """Test RateBucket model validation."""
+    bucket = RateBucket.model_validate({"refill_rate": 30, "bucket_capacity": 60})
+    assert bucket.refill_rate == 30
+    assert bucket.bucket_capacity == 60
+
+
+def test_api_limits_deprecated_flat_properties():
+    """read_limit/write_limit still work but warn and mirror refill_rate."""
+    model = APILimits.model_validate(API_LIMITS_WIRE)
+    with pytest.warns(DeprecationWarning):
+        assert model.read_limit == 200
+    with pytest.warns(DeprecationWarning):
+        assert model.write_limit == 100
 
 
 # --- API Key Models ---

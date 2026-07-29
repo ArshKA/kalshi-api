@@ -1,4 +1,5 @@
 from __future__ import annotations
+import warnings
 from decimal import Decimal
 from functools import cached_property
 from typing import Annotated
@@ -592,13 +593,64 @@ class RateLimitTier(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
 
-class APILimits(BaseModel):
-    """API rate limits for the authenticated user."""
-    usage_tier: str | None = None
-    read_limit: int | None = None
-    write_limit: int | None = None
+class RateBucket(BaseModel):
+    """Token-bucket budget for one rate-limit bucket (read or write).
+
+    Each request deducts tokens equal to its endpoint cost; the bucket
+    refills at ``refill_rate`` tokens per second up to ``bucket_capacity``.
+    A request is rejected with HTTP 429 when the bucket holds fewer tokens
+    than the request costs.
+    """
+    refill_rate: int
+    bucket_capacity: int
 
     model_config = ConfigDict(extra="ignore")
+
+
+class Grant(BaseModel):
+    """An API usage-level grant for one exchange lane.
+
+    ``source`` is ``"volume"`` (earned from trading volume) or ``"manual"``
+    (assigned by Kalshi). A grant with no ``expires_ts`` is permanent.
+    """
+    exchange_instance: str
+    level: str
+    source: str
+    expires_ts: int | None = None
+
+    model_config = ConfigDict(extra="ignore")
+
+
+class APILimits(BaseModel):
+    """API usage tier and token-bucket rate limits for the authenticated user."""
+    usage_tier: str
+    read: RateBucket
+    write: RateBucket
+    grants: list[Grant] = Field(default_factory=list)
+
+    model_config = ConfigDict(extra="ignore")
+
+    @property
+    def read_limit(self) -> int:
+        """Deprecated: use ``read.refill_rate`` instead."""
+        warnings.warn(
+            "APILimits.read_limit is deprecated; use APILimits.read.refill_rate "
+            "(and .read.bucket_capacity) instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.read.refill_rate
+
+    @property
+    def write_limit(self) -> int:
+        """Deprecated: use ``write.refill_rate`` instead."""
+        warnings.warn(
+            "APILimits.write_limit is deprecated; use APILimits.write.refill_rate "
+            "(and .write.bucket_capacity) instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.write.refill_rate
 
     def _repr_html_(self) -> str:
         from ._repr import api_limits_html
