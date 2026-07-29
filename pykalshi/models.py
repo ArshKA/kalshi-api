@@ -79,6 +79,40 @@ class MveSelectedLeg(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
 
+class PriceRange(BaseModel):
+    """A valid price band for orders on a market.
+
+    ``start``, ``end``, and ``step`` are fixed-point dollar strings (e.g.
+    ``"0.10"``, ``"0.005"``). A price is valid within the band when
+    ``start <= price <= end`` and ``(price - start)`` is an integer multiple
+    of ``step``. Kalshi designates the ``price_ranges`` array — not the
+    ``price_level_structure`` label — as the source of truth for a market's
+    valid prices; new structure labels may appear without notice, so consume
+    the ranges rather than switching on the label.
+
+    Use the ``*_decimal`` properties for arithmetic — never floats; rounding
+    errors become real money on a fine-tick market.
+    """
+
+    start: str
+    end: str
+    step: str
+
+    model_config = ConfigDict(extra="ignore")
+
+    @property
+    def start_decimal(self) -> Decimal:
+        return Decimal(self.start)
+
+    @property
+    def end_decimal(self) -> Decimal:
+        return Decimal(self.end)
+
+    @property
+    def step_decimal(self) -> Decimal:
+        return Decimal(self.step)
+
+
 class MarketModel(BaseModel):
     """Pydantic model for Market data."""
 
@@ -127,6 +161,10 @@ class MarketModel(BaseModel):
     # Market structure
     tick_size: int | None = None
     price_level_structure: str | None = None
+    # Canonical tick definition: valid price bands with per-band step. Prefer
+    # this over price_level_structure — Kalshi adds new labels (seven in July
+    # 2026 alone) but the ranges always describe the actual grid.
+    price_ranges: list[PriceRange] | None = None
     fractional_trading_enabled: bool | None = None
     strike_type: str | None = None
     floor_strike: float | None = None

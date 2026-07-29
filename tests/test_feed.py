@@ -568,6 +568,25 @@ class TestMessageModels:
                   "custom_strike", "yes_sub_title", "additional_metadata"):
             assert getattr(msg, f) is None, f
 
+    def test_lifecycle_price_ranges_use_shared_model(self):
+        """price_level_structure_updated frames parse price_ranges into the
+        same PriceRange model as MarketModel, so REST and WS agree."""
+        from pykalshi.models import PriceRange
+
+        msg = MarketLifecycleMessage(
+            market_ticker="TEST",
+            event_type="price_level_structure_updated",
+            price_level_structure="center_half_edge_quint_cent",
+            price_ranges=[
+                {"start": "0.002", "end": "0.10", "step": "0.002"},
+                {"start": "0.10", "end": "0.90", "step": "0.005"},
+                {"start": "0.90", "end": "0.998", "step": "0.002"},
+            ],
+        )
+        assert msg.price_level_structure == "center_half_edge_quint_cent"
+        assert all(isinstance(r, PriceRange) for r in msg.price_ranges)
+        assert msg.price_ranges[1].step == "0.005"
+
     def test_orderbook_snapshot_model(self):
         """OrderbookSnapshotMessage parses correctly."""
         msg = OrderbookSnapshotMessage(
