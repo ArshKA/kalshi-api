@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+### Breaking changes
+
+- **Removed `place_order(buy_max_cost_dollars=...)`.** The V2 create-order
+  request (`CreateOrderV2Request`) has no such field, so the advertised
+  slippage protection was a **silent no-op**: the server ignored the field
+  and the order went out uncapped. Passing it now raises `TypeError`. To cap
+  cost, use a limit price (`price_dollars`) — total cost is then bounded by
+  `price × count`.
+- **Batch order items now reject unknown keys.** `batch_place_orders` used
+  to forward any leftover item keys to the API verbatim, where unknown
+  fields are silently ignored — the same failure mode as above, plus typos
+  (e.g. `expiry_ts`) going undetected. Unknown keys now raise `ValueError`
+  naming the offending key(s).
+
 ## 2.0.0 — 2026-07-26
 
 Major release: migration to Kalshi's V2 order endpoints and canonical

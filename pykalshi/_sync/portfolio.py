@@ -28,6 +28,25 @@ if TYPE_CHECKING:
     from .markets import Market
 
 
+# BatchCreateOrdersV2Request item fields that may be passed through verbatim
+# by _build_batch_orders (everything else is consumed or converted before the
+# passthrough step). The server silently ignores fields it does not know, so
+# forwarding unknown keys would turn typos into silent no-ops -- exactly how
+# the removed buy_max_cost_dollars "slippage protection" failed.
+_V2_BATCH_PASSTHROUGH_KEYS = frozenset({
+    "client_order_id",
+    "time_in_force",
+    "post_only",
+    "self_trade_prevention_type",
+    "cancel_order_on_pause",
+    "reduce_only",
+    "subaccount",
+    "order_group_id",
+    "exchange_index",
+    "expiration_time",
+})
+
+
 class Portfolio:
     """Authenticated user's portfolio and trading operations."""
 
@@ -55,7 +74,6 @@ class Portfolio:
         post_only: bool = False,
         reduce_only: bool = False,
         expiration_ts: int | None = None,
-        buy_max_cost_dollars: str | None = None,
         self_trade_prevention: SelfTradePrevention | None = SelfTradePrevention.CANCEL_RESTING,
         order_group_id: str | None = None,
         subaccount: int | None = None,
@@ -76,7 +94,6 @@ class Portfolio:
             post_only: If True, reject order if it would take liquidity.
             reduce_only: If True, only reduce existing position, never increase.
             expiration_ts: Unix timestamp when order auto-cancels.
-            buy_max_cost_dollars: Maximum total cost (dollar string). Protects against slippage.
             self_trade_prevention: Behavior on self-cross (CANCEL_RESTING or CANCEL_INCOMING).
             order_group_id: Link to an order group for OCO/bracket strategies.
             subaccount: Subaccount number (0 for primary, 1-63 for subaccounts).
@@ -120,7 +137,7 @@ class Portfolio:
             yes_price_dollars=yes_price_dollars, no_price_dollars=no_price_dollars,
             client_order_id=client_order_id, time_in_force=time_in_force,
             post_only=post_only, reduce_only=reduce_only,
-            expiration_ts=expiration_ts, buy_max_cost_dollars=buy_max_cost_dollars,
+            expiration_ts=expiration_ts,
             self_trade_prevention=self_trade_prevention,
             order_group_id=order_group_id, subaccount=subaccount,
             cancel_order_on_pause=cancel_order_on_pause,
@@ -909,7 +926,6 @@ class Portfolio:
         post_only=False,
         reduce_only=False,
         expiration_ts=None,
-        buy_max_cost_dollars=None,
         self_trade_prevention=None,
         order_group_id=None,
         subaccount=None,
@@ -968,8 +984,6 @@ class Portfolio:
             order_data["reduce_only"] = True
         if expiration_ts is not None:
             order_data["expiration_time"] = expiration_ts
-        if buy_max_cost_dollars is not None:
-            order_data["buy_max_cost_dollars"] = buy_max_cost_dollars
         if order_group_id is not None:
             order_data["order_group_id"] = order_group_id
         if subaccount is not None:
@@ -1054,8 +1068,16 @@ class Portfolio:
                             SelfTradePrevention.CANCEL_RESTING.value)
             if "expiration_ts" in o:
                 o["expiration_time"] = o.pop("expiration_ts")
-            # pass through any remaining V2-valid fields (client_order_id,
-            # time_in_force, self_trade_prevention_type, exchange_index, ...)
+            # Pass through only known V2 fields (client_order_id,
+            # time_in_force, self_trade_prevention_type, exchange_index, ...).
+            # Anything else is rejected: the server ignores unknown fields, so
+            # forwarding them would create silent no-ops.
+            unknown = set(o) - _V2_BATCH_PASSTHROUGH_KEYS
+            if unknown:
+                raise ValueError(
+                    "Batch item: unknown field(s) not in the V2 order request: "
+                    + ", ".join(sorted(unknown))
+                )
             item.update(o)
             prepared.append(item)
         return prepared

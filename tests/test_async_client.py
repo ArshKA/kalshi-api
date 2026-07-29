@@ -5,6 +5,7 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, ANY
 
 from pykalshi import AsyncKalshiClient, AsyncMarket, AsyncEvent, AsyncOrder
+from pykalshi.enums import Action, Side
 from pykalshi.exceptions import (
     AuthenticationError,
     ResourceNotFoundError,
@@ -193,6 +194,29 @@ class TestAsyncPortfolio:
         order = await async_client.portfolio.cancel_order("abc-123")
         assert isinstance(order, AsyncOrder)
         assert order.status.value == "canceled"
+
+    @pytest.mark.asyncio
+    async def test_place_order_rejects_removed_buy_max_cost_dollars(self, async_client):
+        """buy_max_cost_dollars was removed: CreateOrderV2Request has no such
+        field, so the server silently ignored the advertised slippage cap."""
+        with pytest.raises(TypeError, match="buy_max_cost_dollars"):
+            await async_client.portfolio.place_order(
+                "KXTEST", Action.BUY, Side.YES, count_fp="10.00",
+                yes_price_dollars="0.50", buy_max_cost_dollars="5.00",
+            )
+        async_client._session.request.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_batch_item_rejects_unknown_keys(self, async_client):
+        """Unknown batch item keys raise instead of being silently ignored
+        server-side."""
+        with pytest.raises(ValueError, match="buy_max_cost_dollars"):
+            await async_client.portfolio.batch_place_orders([{
+                "ticker": "KXTEST", "action": "buy", "side": "yes",
+                "count_fp": "10.00", "yes_price_dollars": "0.50",
+                "buy_max_cost_dollars": "5.00",
+            }])
+        async_client._session.request.assert_not_called()
 
 
 class TestAsyncExchange:
