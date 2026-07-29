@@ -40,6 +40,22 @@
   `**extra_params` for forward compatibility.
 ### Fixed
 
+- **Integration tests no longer race each other on the shared demo account.**
+  The suite mutates real orders on one demo account with no per-run
+  namespace, and the workflow had nothing serialising concurrent runs. When
+  several commits land close together the suites overlap and interfere — a
+  `trigger_order_group` in one run cancels resting orders another run just
+  placed, so its next cancel 404s and its order-group membership never
+  reaches the asserted size. On 2026-07-29 five merges landed in 3.5 minutes
+  and 3 of the 5 overlapping runs failed, in three different tests, while
+  both isolated runs passed; re-running the same SHA alone passed. The
+  integration job now queues on run id (strictly FIFO — unlike a
+  `concurrency:` group, which cancels superseded pending runs and would drop
+  per-commit signal during a merge train). Teardown cancels also became
+  best-effort against `ResourceNotFoundError`, since an order already gone is
+  not a regression in a test whose assertions have all passed; the tests that
+  exercise cancellation as their subject stay strict.
+
 - **`APILimits` realigned to the live `/account/limits` response.** Kalshi
   restructured the endpoint (Apr 30, 2026) to nested per-bucket objects and
   added automated usage-tier `grants` (Jun 5, 2026); the old flat
