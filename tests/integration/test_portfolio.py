@@ -35,6 +35,29 @@ def _eventually_fetch(
     raise AssertionError("Timed out waiting for eventually consistent portfolio state")
 
 
+def _cleanup_cancel(client, *order_ids):
+    """Best-effort cancel for teardown.
+
+    A 404 here means the order is already gone, which teardown does not care
+    about: it may have filled, or another suite sharing this demo account may
+    have cancelled it (a concurrent trigger_order_group takes down resting
+    orders that were placed by a different test run). By the time teardown
+    runs the test's assertions have already passed, so a 404 while tidying up
+    is not a product regression and must not be reported as one.
+
+    Only ResourceNotFoundError is swallowed -- any other cancel failure still
+    surfaces. The tests that exercise cancellation as their subject
+    (test_place_and_cancel_order, test_order_cancel_method,
+    test_batch_cancel_orders, test_order_wait_until_terminal) call the API
+    directly and stay strict, so a genuine break in cancel still fails loudly.
+    """
+    for order_id in order_ids:
+        try:
+            client.portfolio.cancel_order(order_id)
+        except ResourceNotFoundError:
+            pass
+
+
 class TestPortfolioReadOnly:
     """Read-only portfolio tests - safe to run anytime."""
 
@@ -295,7 +318,7 @@ class TestOrderMutations:
         assert amended.status == OrderStatus.RESTING
 
         # Cleanup
-        client.portfolio.cancel_order(amended.order_id)
+        _cleanup_cancel(client, amended.order_id)
 
     def test_order_amend_method(self, client, market_for_orders):
         """Test Order.amend() method."""
@@ -320,7 +343,7 @@ class TestOrderMutations:
         assert order.status == OrderStatus.RESTING
 
         # Cleanup
-        order.cancel()
+        _cleanup_cancel(client, order.order_id)
 
     def test_decrease_order(self, client, market_for_orders):
         """Place an order and decrease its count."""
@@ -347,7 +370,7 @@ class TestOrderMutations:
         assert float(decreased.remaining_count_fp) == 2
 
         # Cleanup
-        client.portfolio.cancel_order(order.order_id)
+        _cleanup_cancel(client, order.order_id)
 
     def test_order_decrease_method(self, client, market_for_orders):
         """Test Order.decrease() method."""
@@ -367,7 +390,7 @@ class TestOrderMutations:
         assert float(order.remaining_count_fp) == 3
 
         # Cleanup
-        order.cancel()
+        _cleanup_cancel(client, order.order_id)
 
     def test_order_refresh(self, client, market_for_orders):
         """Test Order.refresh() to get latest state.
@@ -395,7 +418,7 @@ class TestOrderMutations:
             pass
 
         # Cleanup
-        order.cancel()
+        _cleanup_cancel(client, order.order_id)
 
     def test_batch_cancel_orders(self, client, market_for_orders):
         """Place multiple orders and batch cancel them."""
@@ -444,7 +467,7 @@ class TestOrderMutations:
         assert fetched.ticker == order.ticker
 
         # Cleanup
-        client.portfolio.cancel_order(order.order_id)
+        _cleanup_cancel(client, order.order_id)
 
     def test_batch_place_orders(self, client, market_for_orders):
         """Place multiple orders atomically with batch_place_orders."""
@@ -479,7 +502,7 @@ class TestOrderMutations:
 
         # Cleanup - batch cancel
         order_ids = [o.order_id for o in result]
-        client.portfolio.batch_cancel_orders(order_ids)
+        _cleanup_cancel(client, *order_ids)
 
     def test_batch_place_orders_no_price_conversion(self, client, market_for_orders):
         """Batch orders with no_price_dollars should be converted to yes_price_dollars."""
@@ -502,7 +525,7 @@ class TestOrderMutations:
         assert float(result[0].yes_price_dollars) == 0.01
 
         # Cleanup
-        client.portfolio.batch_cancel_orders([result[0].order_id])
+        _cleanup_cancel(client, result[0].order_id)
 
     def test_batch_place_orders_validation(self, client, market_for_orders):
         """Batch validation catches errors before hitting the API."""
@@ -592,8 +615,7 @@ class TestOrderMutations:
                 assert qp.order_id is not None
         finally:
             # Cleanup
-            for order in orders:
-                order.cancel()
+            _cleanup_cancel(client, *(o.order_id for o in orders))
 
     def test_order_wait_until_terminal(self, client, market_for_orders):
         """Test Order.wait_until_terminal() by cancelling an order."""
@@ -690,7 +712,7 @@ class TestV2OrderSurface:
             self._await_order(client, order.order_id)
             list(client.portfolio.get_orders(status=OrderStatus.RESTING))
         finally:
-            client.portfolio.cancel_order(order.order_id)
+            _cleanup_cancel(client, order.order_id)
 
         assert "/portfolio/events/orders" in paths_for(client, "POST")
         assert f"/portfolio/events/orders/{order.order_id}" in paths_for(client, "DELETE")
@@ -742,7 +764,7 @@ class TestV2OrderSurface:
                 assert fetched.data.side == Side.YES
                 assert fetched.data.action == Action.SELL
         finally:
-            client.portfolio.cancel_order(order.order_id)
+            _cleanup_cancel(client, order.order_id)
 
     def test_amend_actually_changes_the_resting_order(self, client, market_for_orders):
         """Re-read after amending.
@@ -770,7 +792,7 @@ class TestV2OrderSurface:
                 "amend must preserve the price when only the count changes"
             )
         finally:
-            client.portfolio.cancel_order(order.order_id)
+            _cleanup_cancel(client, order.order_id)
 
     def test_write_ack_does_not_blank_known_fields(self, client, market_for_orders):
         """V2 acks carry no ticker/side/price; the Order must keep its own."""
@@ -807,5 +829,4 @@ class TestV2OrderSurface:
             assert prices == pytest.approx([0.01, 0.02])
         finally:
             ids = [o.order_id for o in result if o.order_id]
-            if ids:
-                client.portfolio.batch_cancel_orders(ids)
+            _cleanup_cancel(client, *ids)

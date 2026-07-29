@@ -36,6 +36,9 @@ jobs:
     runs-on: ubuntu-latest
     # Only run if secrets are available (not on forks)
     if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    permissions:
+      contents: read
+      actions: read
 
     steps:
       - uses: actions/checkout@v4
@@ -53,6 +56,41 @@ jobs:
 
       - name: Write private key
         run: echo "${{ secrets.KALSHI_DEMO_PRIVATE_KEY }}" > /tmp/demo_private_key.pem
+
+      # The integration suite places, amends, cancels and triggers real orders
+      # on ONE shared demo account, and that account is the whole isolation
+      # boundary -- there is no per-run namespace. Two suites at once interfere:
+      # a trigger_order_group in run A cancels resting orders that run B just
+      # placed, so B's next cancel 404s, and B's order-group membership never
+      # reaches the size it asserts.
+      #
+      # Observed 2026-07-29, when five merges landed in 3.5 minutes: both runs
+      # that had the account to themselves passed, and 3 of the 5 that
+      # overlapped failed, across three different order-mutation tests.
+      # Re-running the same SHA in isolation passed.
+      #
+      # A `concurrency:` group is the obvious fix and the wrong one here:
+      # GitHub keeps at most one pending run per group and cancels any earlier
+      # pending one, so a merge train would lose per-commit signal on every
+      # commit but the last. Queue on run id instead -- strictly FIFO, nothing
+      # is cancelled, and every commit still gets its own verdict. Placed after
+      # setup so the install overlaps the wait rather than following it.
+      - name: Wait for exclusive use of the demo account
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for _ in $(seq 1 90); do
+            ahead=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow test.yml \
+                      --limit 100 --json databaseId,status \
+                      --jq "[.[] | select(.status != \"completed\" and .databaseId < $GITHUB_RUN_ID)] | length")
+            if [ "${ahead:-0}" -eq 0 ]; then
+              echo "demo account is free"
+              exit 0
+            fi
+            echo "waiting: $ahead earlier run(s) still hold the demo account"
+            sleep 20
+          done
+          echo "::warning::timed out waiting for the demo account; running anyway"
 
       - name: Run integration tests
         env:
