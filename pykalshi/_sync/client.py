@@ -7,6 +7,7 @@ from __future__ import annotations
 import time
 import json
 import logging
+from collections.abc import Sequence
 from functools import cached_property
 from typing import Any, TYPE_CHECKING
 from urllib.parse import urlencode
@@ -17,7 +18,7 @@ from .._base import _BaseKalshiClient, _RETRYABLE_STATUS_CODES
 from .events import Event
 from .markets import Market, Series
 from .mve import MveCollection
-from ..models import MarketModel, EventModel, SeriesModel, TradeModel, CandlestickResponse, MveCollectionModel
+from ..models import MarketModel, EventModel, SeriesModel, TradeModel, CandlestickResponse, MveCollectionModel, OrderbookResponse
 from ..dataframe import DataFrameList
 from .portfolio import Portfolio
 from ..enums import MarketStatus, CandlestickPeriod
@@ -33,6 +34,9 @@ if TYPE_CHECKING:
     from ..rate_limiter import RateLimiterProtocol
 
 logger = logging.getLogger(__name__)
+
+# Maximum tickers per GET /markets/orderbooks request (API limit).
+_ORDERBOOKS_BATCH_LIMIT = 100
 
 
 class KalshiClient(_BaseKalshiClient):
@@ -413,3 +417,52 @@ class KalshiClient(_BaseKalshiClient):
             item["market_ticker"]: CandlestickResponse.model_validate(item)
             for item in (response.get("markets") or [])
         }
+
+    def get_orderbooks(
+        self,
+        tickers: Sequence[str],
+        **extra_params,
+    ) -> dict[str, OrderbookResponse]:
+        """Get orderbooks for multiple markets at once (``GET /markets/orderbooks``).
+
+        Tickers are uppercased and de-duplicated (order preserved), then sent
+        as repeated ``tickers=A&tickers=B`` query parameters — the
+        serialization the API requires. The comma-joined form
+        (``tickers=A,B``) does NOT error: the API silently returns a single
+        entry whose ticker is the literal comma-joined string with an empty
+        book, so any ticker containing a comma is rejected with ValueError
+        rather than sent.
+
+        The API accepts at most 100 tickers per request. Longer lists are
+        chunked into sequential requests of up to 100 tickers each and the
+        results merged, so any number of tickers may be passed.
+
+        Args:
+            tickers: Market tickers to fetch (at least one).
+            **extra_params: Extra query parameters appended to each request.
+
+        Returns:
+            Dict mapping each ticker the API returned an orderbook for to its
+            OrderbookResponse.
+        """
+        normalized = list(dict.fromkeys(normalize_tickers(list(tickers)) or []))
+        if not normalized:
+            raise ValueError("tickers must not be empty")
+        for ticker in normalized:
+            if "," in ticker:
+                raise ValueError(
+                    f"ticker {ticker!r} contains a comma; pass tickers as separate "
+                    "list items — the API misreads comma-joined values"
+                )
+
+        extra_pairs = [(k, v) for k, v in extra_params.items() if v is not None]
+        result: dict[str, OrderbookResponse] = {}
+        for start in range(0, len(normalized), _ORDERBOOKS_BATCH_LIMIT):
+            chunk = normalized[start : start + _ORDERBOOKS_BATCH_LIMIT]
+            query = urlencode([("tickers", t) for t in chunk] + extra_pairs)
+            response = self.get(f"/markets/orderbooks?{query}")
+            for item in response.get("orderbooks") or []:
+                result[item["ticker"]] = OrderbookResponse.model_validate(
+                    {"orderbook_fp": item.get("orderbook_fp") or {}}
+                )
+        return result
