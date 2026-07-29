@@ -289,12 +289,33 @@ class OrderModel(BaseModel):
         return self.book_side == BookSide.ASK
 
 
+class IndexedBalanceModel(BaseModel):
+    """Balance for a single exchange index (``balance_breakdown`` entry).
+
+    ``balance`` is a fixed-point dollar string (e.g. ``"123.4567"``).
+    """
+
+    exchange_index: int = 0
+    balance: str  # fixed-point dollar string
+
+    model_config = ConfigDict(extra="ignore")
+
+
 class BalanceModel(BaseModel):
-    """Pydantic model for Balance data. Values are cents integers."""
+    """Pydantic model for Balance data.
+
+    ``balance`` and ``portfolio_value`` are cents integers.
+    ``balance_dollars`` is the same available balance as a fixed-point dollar
+    string with up to 6 decimal places — sub-cent precision the cents field
+    cannot represent. ``balance_breakdown`` holds per-exchange-index dollar
+    balances when the API provides them.
+    """
 
     balance: int
     portfolio_value: int
     updated_ts: int | None = None
+    balance_dollars: str | None = None  # fixed-point dollar string
+    balance_breakdown: list[IndexedBalanceModel] = Field(default_factory=list)
 
 
     model_config = ConfigDict(extra="ignore")

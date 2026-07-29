@@ -145,6 +145,32 @@ class TestAsyncPortfolio:
 
     @pytest.mark.asyncio
     async def test_get_balance(self, async_client):
+        """Documented response with balance_dollars and breakdown."""
+        async_client._session.request.return_value = _mock_response({
+            "balance": 5000,
+            "balance_dollars": "50.0001",
+            "portfolio_value": 10000,
+            "updated_ts": 1784701854,
+            "balance_breakdown": [
+                {"exchange_index": 0, "balance": "50.0001"},
+            ],
+        })
+
+        balance = await async_client.portfolio.get_balance()
+
+        assert balance.balance == 5000
+        assert balance.balance_dollars == "50.0001"
+        assert balance.portfolio_value == 10000
+        assert balance.balance_breakdown[0].exchange_index == 0
+        assert balance.balance_breakdown[0].balance == "50.0001"
+
+        # No query params by default
+        call_url = async_client._session.request.call_args.args[1]
+        assert call_url.endswith("/portfolio/balance")
+
+    @pytest.mark.asyncio
+    async def test_get_balance_without_breakdown(self, async_client):
+        """Older responses without balance_dollars/breakdown still parse."""
         async_client._session.request.return_value = _mock_response({
             "balance": 5000,
             "portfolio_value": 10000,
@@ -153,7 +179,25 @@ class TestAsyncPortfolio:
         balance = await async_client.portfolio.get_balance()
 
         assert balance.balance == 5000
-        assert balance.portfolio_value == 10000
+        assert balance.balance_dollars is None
+        assert balance.balance_breakdown == []
+
+    @pytest.mark.asyncio
+    async def test_get_balance_query_params(self, async_client):
+        """subaccount and exchange_index are passed as query params."""
+        async_client._session.request.return_value = _mock_response({
+            "balance": 0,
+            "balance_dollars": "0.0000",
+            "portfolio_value": 0,
+            "updated_ts": 1784701854,
+        })
+
+        await async_client.portfolio.get_balance(subaccount=3, exchange_index=0)
+
+        call_url = async_client._session.request.call_args.args[1]
+        assert "/portfolio/balance?" in call_url
+        assert "subaccount=3" in call_url
+        assert "exchange_index=0" in call_url
 
     @pytest.mark.asyncio
     async def test_get_positions(self, async_client):

@@ -53,9 +53,34 @@ class Portfolio:
     def __init__(self, client: KalshiClient) -> None:
         self._client = client
 
-    def get_balance(self) -> BalanceModel:
-        """Get portfolio balance. Values are dollar strings."""
-        data = self._client.get("/portfolio/balance")
+    def get_balance(
+        self,
+        *,
+        subaccount: int | None = None,
+        exchange_index: int | None = None,
+    ) -> BalanceModel:
+        """Get account balance and portfolio value.
+
+        ``balance`` and ``portfolio_value`` are cents integers;
+        ``balance_dollars`` carries the available balance as a fixed-point
+        dollar string (up to 6 decimal places), and ``balance_breakdown``
+        lists per-exchange-index dollar balances when provided.
+
+        Args:
+            subaccount: Subaccount number (0 for primary, 1-63 for
+                subaccounts). Defaults to the primary account.
+            exchange_index: Exchange shard identifier. Currently only 0 is
+                supported.
+        """
+        params: dict = {}
+        if subaccount is not None:
+            params["subaccount"] = subaccount
+        if exchange_index is not None:
+            params["exchange_index"] = exchange_index
+        endpoint = "/portfolio/balance"
+        if params:
+            endpoint = f"{endpoint}?{urlencode(params)}"
+        data = self._client.get(endpoint)
         return BalanceModel.model_validate(data)
 
     def place_order(
