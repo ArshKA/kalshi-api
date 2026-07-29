@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import uuid
 from decimal import Decimal
 from typing import TYPE_CHECKING
@@ -25,6 +26,7 @@ if TYPE_CHECKING:
     from .client import AsyncKalshiClient
     from .markets import AsyncMarket
 
+logger = logging.getLogger(__name__)
 
 # BatchCreateOrdersV2Request item fields that may be passed through verbatim
 # by _build_batch_orders (everything else is consumed or converted before the
@@ -467,6 +469,12 @@ class AsyncPortfolio:
             orders: List of order dicts with keys: ticker, action, side, count_fp,
                     yes_price_dollars/no_price_dollars, and optional advanced params.
 
+        Returns:
+            The placed Orders. The API rejects items individually, so a rejected
+            item is logged at WARNING and omitted -- the result can be shorter
+            than `orders`. Compare the lengths before assuming the whole batch
+            went on the book.
+
         Example:
             orders = [
                 {"ticker": "KXBTC", "action": "buy", "side": "yes", "count_fp": "10.00", "yes_price_dollars": "0.45"},
@@ -488,12 +496,20 @@ class AsyncPortfolio:
             order_ids: List of order IDs to cancel (max 20).
 
         Returns:
-            The canceled Orders with updated status.
+            The canceled Orders, each with status CANCELED and `reduced_by_fp`
+            set to the contracts actually pulled off the book. Orders the API
+            rejected are logged at WARNING and omitted, so the result can be
+            shorter than `order_ids` -- compare the lengths before treating a
+            mass cancel as complete.
         """
         orders = [{"order_id": oid} for oid in order_ids]
         response = await self._client.delete("/portfolio/events/orders/batched", {"orders": orders})
         return DataFrameList(
-            AsyncOrder(self._client, m) for m in self._orders_from_v2_batch(response)
+            AsyncOrder(self._client, m)
+            for m in self._orders_from_v2_batch(
+                response, [{"order_id": oid} for oid in order_ids],
+                default_status=OrderStatus.CANCELED,
+            )
         )
 
     # --- Queue Position ---
@@ -916,6 +932,15 @@ class AsyncPortfolio:
             data["fill_count_fp"] = response["fill_count"]
         if response.get("remaining_count") is not None:
             data["remaining_count_fp"] = response["remaining_count"]
+        # What the immediate fill actually cost, and what a cancel actually
+        # pulled. Only the write acks carry these -- dropping them forces a
+        # /portfolio/fills round-trip to answer "what did that order pay?".
+        if response.get("average_fill_price") is not None:
+            data["average_fill_price_dollars"] = response["average_fill_price"]
+        if response.get("average_fee_paid") is not None:
+            data["average_fee_paid_dollars"] = response["average_fee_paid"]
+        if response.get("reduced_by") is not None:
+            data["reduced_by_fp"] = response["reduced_by"]
         # Canonical direction: the caller always knows it -- it is exactly what
         # went on the wire -- so a synthesised order carries the same fields a
         # fetched one does.
@@ -938,6 +963,7 @@ class AsyncPortfolio:
         response: dict,
         prepared: list[dict] | None = None,
         originals: list[dict] | None = None,
+        default_status: OrderStatus | None = None,
     ) -> list[OrderModel]:
         """Parse a batched response, tolerating the thin-ack item shape as well
         as the legacy {"order": {...}} wrapper.
@@ -945,6 +971,24 @@ class AsyncPortfolio:
         Like the single-order acks, batch acks carry no ticker/price/side, so the
         request that produced each one is folded back in. Items are matched by
         client_order_id where the caller supplied one, else positionally.
+
+        The API rejects items individually -- a batch of N can come back with
+        M < N usable entries and the rest carrying {"error": {...}}. Those are
+        logged at WARNING rather than dropped in silence; the returned list is
+        shorter than the request, so compare lengths.
+
+        Rejection is detected on the `error` key, NOT on a missing order_id.
+        The two batch legs differ: BatchCreateOrdersV2Response items omit
+        order_id when they fail, but BatchCancelOrdersV2Response *requires*
+        order_id on every item including failures (reduced_by is "0.00" and
+        ts_ms absent when the cancel errored). Keying on order_id would let a
+        failed cancel through, and default_status would then stamp it CANCELED
+        -- reporting a live resting order as gone.
+
+        `default_status` overrides the count-derived status for endpoints whose
+        receipts carry no counts (batch cancel returns {order_id, reduced_by,
+        ts_ms}, which would otherwise infer `resting` for an order that was in
+        fact canceled).
         """
         items = response.get("orders") or []
         prepared = prepared or []
@@ -963,7 +1007,18 @@ class AsyncPortfolio:
             if isinstance(legacy, dict):
                 models.append(OrderModel.model_validate(legacy))
                 continue
-            if item.get("order_id") is None:
+            if item.get("error") is not None or item.get("order_id") is None:
+                req = prepared[idx] if idx < len(prepared) else {}
+                logger.warning(
+                    "Batch item %d (%s) was rejected and is missing from the "
+                    "result: %s",
+                    idx,
+                    item.get("order_id")
+                    or req.get("order_id")
+                    or req.get("ticker")
+                    or "unidentified",
+                    item.get("error", item),
+                )
                 continue
 
             i = by_coid.get(item.get("client_order_id"), idx)
@@ -974,6 +1029,7 @@ class AsyncPortfolio:
                 "order_id": item["order_id"],
                 "ticker": item.get("ticker") or req.get("ticker") or "",
                 "status": item.get("status")
+                or default_status
                 or AsyncPortfolio._v2_status_from_ack(item),
             }
             bs = item.get("book_side") or req.get("side")
@@ -993,6 +1049,12 @@ class AsyncPortfolio:
                 entry["remaining_count_fp"] = item["remaining_count"]
             if item.get("fill_count") is not None:
                 entry["fill_count_fp"] = item["fill_count"]
+            if item.get("average_fill_price") is not None:
+                entry["average_fill_price_dollars"] = item["average_fill_price"]
+            if item.get("average_fee_paid") is not None:
+                entry["average_fee_paid_dollars"] = item["average_fee_paid"]
+            if item.get("reduced_by") is not None:
+                entry["reduced_by_fp"] = item["reduced_by"]
             models.append(OrderModel.model_validate(entry))
         return models
 

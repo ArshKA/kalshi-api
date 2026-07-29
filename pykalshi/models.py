@@ -243,6 +243,19 @@ class OrderModel(BaseModel):
     taker_fill_cost_dollars: str | None = None
     maker_fill_cost_dollars: str | None = None
 
+    # V2 write-ack only: what the immediate fill actually cost. The read
+    # endpoints do not send these; the create/amend ack does, and it is the
+    # only place a caller sees the realised price and fee without a separate
+    # /portfolio/fills round-trip. Both are volume-weighted averages *per
+    # contract* and are present only when fill_count > 0 -- multiply by
+    # fill_count_fp for totals.
+    average_fill_price_dollars: str | None = None
+    average_fee_paid_dollars: str | None = None
+
+    # V2 cancel/batch-cancel receipt: contracts actually pulled off the book.
+    # A cancel that reduced nothing reports "0.00" rather than erroring.
+    reduced_by_fp: str | None = None
+
     # Metadata
     user_id: str | None = None
     client_order_id: str | None = None
