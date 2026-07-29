@@ -30,6 +30,9 @@ class HistoricalCutoffResponse(BaseModel):
     market_settled_ts: str
     trades_created_ts: str
     orders_updated_ts: str
+    # Positions archived before this timestamp are served by
+    # GET /historical/positions instead of GET /portfolio/positions.
+    market_positions_last_updated_ts: str | None = None
 
     model_config = ConfigDict(extra="ignore")
 

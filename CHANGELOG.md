@@ -96,6 +96,17 @@
   primary, 1–63 for subaccounts) and `exchange_index` keyword-only query
   parameters. The docstring previously claimed dollar strings for what are
   cents integers; it now describes the actual fields.
+### Added
+
+- **`history.get_positions()`** — wraps the new `GET /historical/positions`
+  endpoint (Kalshi changelog 2026-07-23) for settled market positions that
+  have been archived to the historical database. Supports `ticker`,
+  `event_ticker`, `limit`, `cursor`, and `fetch_all`, returning the same
+  `PositionModel` objects as `portfolio.get_positions()`. Available on both
+  sync and async clients.
+- **`HistoricalCutoffResponse.market_positions_last_updated_ts`** (optional) —
+  the new cutoff timestamp: positions archived before it are served by
+  `GET /historical/positions` instead of `GET /portfolio/positions`.
 
 ## 2.0.0 — 2026-07-26
 

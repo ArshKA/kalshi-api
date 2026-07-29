@@ -11,7 +11,7 @@ from ..enums import CandlestickPeriod
 from ..dataframe import DataFrameList
 from .._utils import normalize_ticker
 from ..models import (
-    MarketModel, OrderModel, FillModel, TradeModel,
+    MarketModel, OrderModel, FillModel, TradeModel, PositionModel,
     HistoricalCutoffResponse, HistoricalCandlestick,
 )
 
@@ -154,6 +154,43 @@ class History:
         }
         data = self._client.paginated_get("/historical/orders", "orders", params, fetch_all)
         return DataFrameList(Order(self._client, OrderModel.model_validate(d)) for d in data)
+
+    def get_positions(
+        self,
+        *,
+        ticker: str | None = None,
+        event_ticker: str | None = None,
+        limit: int = 100,
+        cursor: str | None = None,
+        fetch_all: bool = False,
+        **extra_params,
+    ) -> DataFrameList[PositionModel]:
+        """Get historical settled market positions (requires authentication).
+
+        Positions whose markets were archived before the
+        ``market_positions_last_updated_ts`` cutoff (see ``get_cutoff``) are
+        served here. Positions are archived per whole event: a settled
+        event's positions move here together and are never split between this
+        endpoint and ``GET /portfolio/positions``. Unsettled positions are
+        always available via ``portfolio.get_positions``.
+
+        Args:
+            ticker: Filter by market ticker.
+            event_ticker: Filter by event ticker (only a single event ticker
+                is supported).
+            limit: Results per page (default 100, max 1000).
+            cursor: Pagination cursor.
+            fetch_all: Automatically fetch all pages.
+        """
+        params = {
+            "ticker": normalize_ticker(ticker),
+            "event_ticker": normalize_ticker(event_ticker),
+            "limit": limit,
+            "cursor": cursor,
+            **extra_params,
+        }
+        data = self._client.paginated_get("/historical/positions", "market_positions", params, fetch_all)
+        return DataFrameList(PositionModel.model_validate(p) for p in data)
 
     def get_trades(
         self,
