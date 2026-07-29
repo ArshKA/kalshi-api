@@ -2,6 +2,7 @@ import pytest
 from decimal import Decimal
 from pykalshi.models import (
     BalanceModel,
+    IndexedBalanceModel,
     OrderModel,
     MarketModel,
     PriceRange,
@@ -20,10 +21,34 @@ from pykalshi.enums import Action, Side, OrderStatus
 
 
 def test_balance_model_validation():
+    """Tolerates responses without balance_dollars/balance_breakdown."""
     data = {"balance": 1000, "portfolio_value": 2000}
     model = BalanceModel.model_validate(data)
     assert model.balance == 1000
     assert model.portfolio_value == 2000
+    assert model.balance_dollars is None
+    assert model.balance_breakdown == []
+
+
+def test_balance_model_documented_response():
+    """Full GetBalanceResponse per docs: dollars string + breakdown."""
+    data = {
+        "balance": 5600,
+        "balance_dollars": "56.0001",
+        "portfolio_value": 10000,
+        "updated_ts": 1784701854,
+        "balance_breakdown": [
+            {"exchange_index": 0, "balance": "56.0001"},
+        ],
+    }
+    model = BalanceModel.model_validate(data)
+    assert model.balance == 5600
+    assert model.balance_dollars == "56.0001"
+    assert model.updated_ts == 1784701854
+    assert len(model.balance_breakdown) == 1
+    assert isinstance(model.balance_breakdown[0], IndexedBalanceModel)
+    assert model.balance_breakdown[0].exchange_index == 0
+    assert model.balance_breakdown[0].balance == "56.0001"
 
 
 def test_order_model_parsing():

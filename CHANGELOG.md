@@ -86,6 +86,16 @@
   commas raise `ValueError`). Lists longer than the API's 100-ticker limit
   are chunked into sequential requests and merged, so any number of tickers
   may be passed.
+### Added
+
+- **`GET /portfolio/balance` matches the current API.** `BalanceModel` now
+  carries `balance_dollars` (fixed-point dollar string, up to 6 decimal
+  places — sub-cent precision the cents field cannot represent) and
+  `balance_breakdown` (per-exchange-index dollar balances, new
+  `IndexedBalanceModel`). `get_balance()` accepts `subaccount` (0 for
+  primary, 1–63 for subaccounts) and `exchange_index` keyword-only query
+  parameters. The docstring previously claimed dollar strings for what are
+  cents integers; it now describes the actual fields.
 
 ## 2.0.0 — 2026-07-26
 

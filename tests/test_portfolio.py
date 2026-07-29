@@ -9,6 +9,61 @@ from pykalshi.enums import Action, Side, OrderStatus, PositionCountFilter, TimeI
 from pykalshi.portfolio import Portfolio
 
 
+def test_get_balance_documented_response(client, mock_response):
+    """Balance parses the documented response, including balance_dollars and breakdown."""
+    client._session.request.return_value = mock_response(
+        {
+            "balance": 5600,
+            "balance_dollars": "56.0001",
+            "portfolio_value": 10000,
+            "updated_ts": 1784701854,
+            "balance_breakdown": [
+                {"exchange_index": 0, "balance": "56.0001"},
+            ],
+        }
+    )
+
+    balance = client.portfolio.get_balance()
+
+    assert balance.balance == 5600
+    assert balance.balance_dollars == "56.0001"
+    assert balance.portfolio_value == 10000
+    assert balance.balance_breakdown[0].exchange_index == 0
+    assert balance.balance_breakdown[0].balance == "56.0001"
+
+    # No query params by default
+    call_url = client._session.request.call_args.args[1]
+    assert call_url.endswith("/portfolio/balance")
+
+
+def test_get_balance_without_breakdown(client, mock_response):
+    """Older responses without balance_dollars/breakdown still parse."""
+    client._session.request.return_value = mock_response(
+        {"balance": 5000, "portfolio_value": 10000, "updated_ts": 1784701854}
+    )
+
+    balance = client.portfolio.get_balance()
+
+    assert balance.balance == 5000
+    assert balance.balance_dollars is None
+    assert balance.balance_breakdown == []
+
+
+def test_get_balance_query_params(client, mock_response):
+    """subaccount and exchange_index are passed as query params."""
+    client._session.request.return_value = mock_response(
+        {"balance": 0, "balance_dollars": "0.0000", "portfolio_value": 0,
+         "updated_ts": 1784701854}
+    )
+
+    client.portfolio.get_balance(subaccount=3, exchange_index=0)
+
+    call_url = client._session.request.call_args.args[1]
+    assert "/portfolio/balance?" in call_url
+    assert "subaccount=3" in call_url
+    assert "exchange_index=0" in call_url
+
+
 def test_get_positions_workflow(client, mock_response):
     """Test fetching portfolio positions."""
     client._session.request.return_value = mock_response(
