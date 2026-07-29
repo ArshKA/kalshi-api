@@ -714,6 +714,53 @@ def test_batch_item_rejects_both_count_spellings(client):
         }])
 
 
+def test_place_order_rejects_removed_buy_max_cost_dollars(client):
+    """buy_max_cost_dollars was removed: CreateOrderV2Request has no such
+    field, so the server silently ignored the advertised slippage cap. It
+    must fail loudly rather than place an uncapped order."""
+    with pytest.raises(TypeError, match="buy_max_cost_dollars"):
+        client.portfolio.place_order(
+            "KXTEST", Action.BUY, Side.YES, count_fp="10.00",
+            yes_price_dollars="0.50", buy_max_cost_dollars="5.00",
+        )
+    client._session.request.assert_not_called()
+
+
+def test_batch_item_rejects_unknown_keys(client):
+    """Unknown batch item keys must raise instead of being forwarded: the
+    server ignores fields it does not know, turning them into silent no-ops
+    (the removed buy_max_cost_dollars was exactly this)."""
+    with pytest.raises(ValueError, match="buy_max_cost_dollars"):
+        client.portfolio.batch_place_orders([{
+            "ticker": "KXTEST", "action": "buy", "side": "yes",
+            "count_fp": "10.00", "yes_price_dollars": "0.50",
+            "buy_max_cost_dollars": "5.00",
+        }])
+    client._session.request.assert_not_called()
+
+
+def test_batch_item_passes_through_known_v2_fields(client, mock_response):
+    """The unknown-key whitelist must not reject documented V2 fields."""
+    client._session.request.return_value = mock_response(
+        {"orders": [_create_ack("o1")]}
+    )
+
+    client.portfolio.batch_place_orders([{
+        "ticker": "KXTEST", "action": "buy", "side": "yes",
+        "count_fp": "10.00", "yes_price_dollars": "0.50",
+        "client_order_id": "c1", "expiration_ts": 1800000000,
+        "cancel_order_on_pause": True, "exchange_index": -1,
+    }])
+
+    body = json.loads(client._session.request.call_args.kwargs["content"])
+    item = body["orders"][0]
+    assert item["client_order_id"] == "c1"
+    assert item["expiration_time"] == 1800000000
+    assert item["cancel_order_on_pause"] is True
+    assert item["exchange_index"] == -1
+    assert "expiration_ts" not in item
+
+
 def test_batch_place_orders_matches_acks_by_client_order_id(client, mock_response):
     """Acks returned out of order must still line up with their requests."""
     client._session.request.return_value = mock_response({"orders": [
