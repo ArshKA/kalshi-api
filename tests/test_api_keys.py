@@ -2,7 +2,35 @@
 
 import pytest
 import json
-from unittest.mock import ANY
+from unittest.mock import ANY, AsyncMock, MagicMock
+
+from pykalshi import AsyncKalshiClient
+
+
+def async_mock_response(json_data, status_code=200, text=""):
+    """Create a mock httpx.Response for async client tests."""
+    resp = MagicMock()
+    resp.json.return_value = json_data
+    resp.status_code = status_code
+    resp.text = text
+    resp.content = b"ok" if json_data else b""
+    resp.headers = {}
+    return resp
+
+
+@pytest.fixture
+def async_client(mocker):
+    """Returns an AsyncKalshiClient with mocked auth and HTTP session."""
+    mocker.patch("pykalshi._base._BaseKalshiClient._load_private_key")
+    mocker.patch(
+        "pykalshi._base._BaseKalshiClient._sign_request",
+        return_value=("1234567890", "fake_sig"),
+    )
+    mocker.patch("httpx.AsyncClient")
+
+    c = AsyncKalshiClient(api_key_id="fake_key", private_key_path="fake_path", demo=True)
+    c._session.request = AsyncMock()
+    return c
 
 
 class TestAPIKeysList:
@@ -153,22 +181,36 @@ class TestAPIKeyDelete:
             client.api_keys.delete("nonexistent-key")
 
 
+# Live-verified /account/limits payload (captured 2026-07-26 from production).
+API_LIMITS_WIRE = {
+    "usage_tier": "basic",
+    "read": {"refill_rate": 200, "bucket_capacity": 400},
+    "write": {"refill_rate": 100, "bucket_capacity": 100},
+    "grants": [
+        {"exchange_instance": "event_contract", "level": "advanced", "source": "manual"},
+    ],
+}
+
+
 class TestAPILimits:
     """Tests for API rate limits."""
 
     def test_get_limits(self, client, mock_response):
-        """Test fetching API rate limits."""
-        client._session.request.return_value = mock_response({
-            "usage_tier": "standard",
-            "read_limit": 20,
-            "write_limit": 10,
-        })
+        """Test fetching API rate limits (nested wire shape)."""
+        client._session.request.return_value = mock_response(API_LIMITS_WIRE)
 
         limits = client.api_keys.get_limits()
 
-        assert limits.usage_tier == "standard"
-        assert limits.read_limit == 20
-        assert limits.write_limit == 10
+        assert limits.usage_tier == "basic"
+        assert limits.read.refill_rate == 200
+        assert limits.read.bucket_capacity == 400
+        assert limits.write.refill_rate == 100
+        assert limits.write.bucket_capacity == 100
+        assert len(limits.grants) == 1
+        assert limits.grants[0].exchange_instance == "event_contract"
+        assert limits.grants[0].level == "advanced"
+        assert limits.grants[0].source == "manual"
+        assert limits.grants[0].expires_ts is None
         client._session.request.assert_called_with(
             "GET",
             "https://external-api.demo.kalshi.co/trade-api/v2/account/limits",
@@ -176,17 +218,42 @@ class TestAPILimits:
             timeout=ANY,
         )
 
-    def test_get_limits_minimal(self, client, mock_response):
-        """Test limits with minimal response."""
-        client._session.request.return_value = mock_response({
-            "usage_tier": "basic",
-        })
+    def test_get_limits_deprecated_properties(self, client, mock_response):
+        """Deprecated flat read_limit/write_limit warn and mirror refill_rate."""
+        client._session.request.return_value = mock_response(API_LIMITS_WIRE)
 
         limits = client.api_keys.get_limits()
 
+        with pytest.warns(DeprecationWarning):
+            assert limits.read_limit == 200
+        with pytest.warns(DeprecationWarning):
+            assert limits.write_limit == 100
+
+
+class TestAsyncAPILimits:
+    """Async tests for API rate limits."""
+
+    async def test_get_limits(self, async_client):
+        """Test fetching API rate limits via the async client."""
+        async_client._session.request.return_value = async_mock_response(
+            API_LIMITS_WIRE
+        )
+
+        limits = await async_client.api_keys.get_limits()
+
         assert limits.usage_tier == "basic"
-        assert limits.read_limit is None
-        assert limits.write_limit is None
+        assert limits.read.refill_rate == 200
+        assert limits.read.bucket_capacity == 400
+        assert limits.write.refill_rate == 100
+        assert limits.write.bucket_capacity == 100
+        assert len(limits.grants) == 1
+        assert limits.grants[0].expires_ts is None
+        async_client._session.request.assert_called_with(
+            "GET",
+            "https://external-api.demo.kalshi.co/trade-api/v2/account/limits",
+            headers=ANY,
+            timeout=ANY,
+        )
 
 
 class TestAPIKeysCachedProperty:

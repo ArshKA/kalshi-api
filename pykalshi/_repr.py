@@ -495,13 +495,17 @@ def api_limits_html(a: APILimits) -> str:
     if a.usage_tier:
         rows.append(_row("Tier", f'<span class="pill pill-gray">{escape(a.usage_tier)}</span>'))
 
-    if a.read_limit is not None:
-        rows.append(_row("Read Limit", f"{a.read_limit:,}"))
+    rows.append(_row("Read", f"{a.read.refill_rate:,}/s (burst {a.read.bucket_capacity:,})"))
+    rows.append(_row("Write", f"{a.write.refill_rate:,}/s (burst {a.write.bucket_capacity:,})"))
 
-    if a.write_limit is not None:
-        rows.append(_row("Write Limit", f"{a.write_limit:,}"))
+    if a.grants:
+        grant_pills = " ".join(
+            f'<span class="pill pill-gray">{escape(g.exchange_instance)}: {escape(g.level)}</span>'
+            for g in a.grants
+        )
+        rows.append(_row("Grants", grant_pills))
 
-    return _wrap(f"<table>{''.join(rows)}</table>") if rows else _wrap("<em>No limits info</em>")
+    return _wrap(f"<table>{''.join(rows)}</table>")
 
 
 def api_key_html(k: APIKey) -> str:

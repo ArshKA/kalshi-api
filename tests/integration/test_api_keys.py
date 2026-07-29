@@ -24,12 +24,21 @@ class TestAPIKeysReadOnly:
         assert hasattr(key, "name")
 
     def test_get_limits(self, client):
-        """Get API limits."""
+        """Get API limits (nested token-bucket shape)."""
         limits = client.api_keys.get_limits()
 
-        assert hasattr(limits, "usage_tier")
-        assert hasattr(limits, "read_limit")
-        assert hasattr(limits, "write_limit")
+        assert isinstance(limits.usage_tier, str) and limits.usage_tier
+        assert limits.read.refill_rate > 0
+        assert limits.read.bucket_capacity > 0
+        assert limits.write.refill_rate > 0
+        assert limits.write.bucket_capacity > 0
+        assert isinstance(limits.grants, list)
+
+        # Deprecated flat aliases still resolve (with a warning).
+        with pytest.warns(DeprecationWarning):
+            assert limits.read_limit == limits.read.refill_rate
+        with pytest.warns(DeprecationWarning):
+            assert limits.write_limit == limits.write.refill_rate
 
 
 class TestAPIKeysMutation:
