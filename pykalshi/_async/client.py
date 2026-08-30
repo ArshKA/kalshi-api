@@ -12,6 +12,9 @@ from urllib.parse import urlencode
 
 import httpx
 
+if TYPE_CHECKING:
+    from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
+
 from .._base import _BaseKalshiClient, _RETRYABLE_STATUS_CODES
 from .events import AsyncEvent
 from .markets import AsyncMarket, AsyncSeries
@@ -50,6 +53,7 @@ class AsyncKalshiClient(_BaseKalshiClient):
         self,
         api_key_id: str | None = None,
         private_key_path: str | None = None,
+        private_key: str | RSAPrivateKey | None = None,
         api_base: str | None = None,
         demo: bool = False,
         timeout: float = 10.0,
@@ -59,6 +63,7 @@ class AsyncKalshiClient(_BaseKalshiClient):
         super().__init__(
             api_key_id=api_key_id,
             private_key_path=private_key_path,
+            private_key=private_key,
             api_base=api_base,
             demo=demo,
             timeout=timeout,

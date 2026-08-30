@@ -44,6 +44,7 @@ class _BaseKalshiClient:
         self,
         api_key_id: str | None = None,
         private_key_path: str | None = None,
+        private_key: str | RSAPrivateKey | None = None,
         api_base: str | None = None,
         demo: bool = False,
         timeout: float = 10.0,
@@ -51,24 +52,42 @@ class _BaseKalshiClient:
         rate_limiter: Any = None,
     ) -> None:
         resolved_api_key_id = api_key_id or os.getenv("KALSHI_API_KEY_ID")
-        private_key_path = private_key_path or os.getenv("KALSHI_PRIVATE_KEY_PATH")
-
         if not resolved_api_key_id:
             raise ValueError(
                 "API key ID required. Set KALSHI_API_KEY_ID env var or pass api_key_id."
             )
-        if not private_key_path:
+        self.api_key_id: str = resolved_api_key_id
+
+        # Credential precedence: args > env vars
+        if private_key:
+            pass  # Use provided private_key
+        elif private_key_path:
+            pass  # Use provided private_key_path
+        elif os.getenv("KALSHI_PRIVATE_KEY"):
+            private_key = os.getenv("KALSHI_PRIVATE_KEY")
+        elif os.getenv("KALSHI_PRIVATE_KEY_PATH"):
+            private_key_path = os.getenv("KALSHI_PRIVATE_KEY_PATH")
+        else:
             raise ValueError(
-                "Private key path required. Set KALSHI_PRIVATE_KEY_PATH env var or pass private_key_path."
+                "Private key or path required. Set KALSHI_PRIVATE_KEY or KALSHI_PRIVATE_KEY_PATH env var."
             )
 
-        self.api_key_id: str = resolved_api_key_id
         self.api_base = api_base or (DEMO_API_BASE if demo else DEFAULT_API_BASE)
         self._api_path = urlparse(self.api_base).path
         self.timeout = timeout
         self.max_retries = max_retries
         self.rate_limiter = rate_limiter
-        self.private_key = self._load_private_key(private_key_path)
+        
+        if private_key:
+            if isinstance(private_key, RSAPrivateKey):
+                self.private_key = private_key
+            elif isinstance(private_key, str):
+                self.private_key = self._load_private_key_string(private_key)
+            else:
+                raise TypeError(f"Expected private_key to be str or RSAPrivateKey, got {type(private_key).__name__}")
+        else:
+            # Type ignore because private_key_path must be a str here based on the checks above
+            self.private_key = self._load_private_key(private_key_path)  # type: ignore
 
     @classmethod
     def from_env(cls, **kwargs) -> "_BaseKalshiClient":
@@ -80,6 +99,15 @@ class _BaseKalshiClient:
         from dotenv import load_dotenv
         load_dotenv()
         return cls(**kwargs)
+        
+    def _load_private_key_string(self, key_string: str) -> RSAPrivateKey:
+        """Load RSA private key from PEM string."""
+        # Handle literal \n if present
+        key_string = key_string.replace("\\n", "\n")
+        key = serialization.load_pem_private_key(key_string.encode('utf-8'), password=None)
+        if not isinstance(key, RSAPrivateKey):
+            raise TypeError(f"Expected RSA private key, got {type(key).__name__}")
+        return key
 
     def _load_private_key(self, key_path: str) -> RSAPrivateKey:
         """Load RSA private key from PEM file."""
